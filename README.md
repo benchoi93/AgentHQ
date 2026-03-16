@@ -38,6 +38,10 @@ Each **agent** runs on a machine, heartbeats to the server, and manages tmux ses
 
 ### 1. Deploy the Server
 
+#### Option A: Self-Hosted (Docker Compose)
+
+Best for lab servers, on-prem machines, or any box you control.
+
 ```bash
 git clone git@github.com:UMN-Choi-Lab/AgentHQ.git && cd AgentHQ
 cp env.example .env
@@ -46,6 +50,49 @@ cp env.example .env
 docker compose up -d --build
 # Access at http://<your-server>:8420
 ```
+
+#### Option B: Fly.io
+
+Good for a persistent, publicly accessible server with minimal setup. Free tier includes 3 shared VMs and 1 GB persistent volume.
+
+```bash
+# Install flyctl: https://fly.io/docs/hands-on/install-flyctl/
+fly auth login
+
+# Clone and launch
+git clone git@github.com:UMN-Choi-Lab/AgentHQ.git && cd AgentHQ
+fly launch --no-deploy          # creates fly.toml — pick a region near you
+
+# Set your auth token
+fly secrets set AGENTHQ_TOKEN="your-strong-secret"
+
+# Create a persistent volume for SQLite
+fly volumes create agenthq_data --size 1 --region <your-region>
+
+# Deploy
+fly deploy
+
+# Access at https://<your-app>.fly.dev
+```
+
+Add to your `fly.toml`:
+```toml
+[mounts]
+  source = "agenthq_data"
+  destination = "/app/data"
+
+[env]
+  AGENTHQ_DB_PATH = "/app/data/agenthq.db"
+```
+
+#### Option C: Railway / Render
+
+Both support Docker-based deploys with persistent storage:
+
+- **[Railway](https://railway.app)** — Connect your GitHub repo, add `AGENTHQ_TOKEN` as an env variable, and deploy. Attach a volume for SQLite persistence.
+- **[Render](https://render.com)** — Create a Web Service from Docker, set environment variables, and add a persistent disk mounted at `/app/data`.
+
+> **Note:** AgentHQ uses SQLite, so the server needs a persistent filesystem. Serverless platforms (Vercel, AWS Lambda) won't work without switching to PostgreSQL.
 
 ### 2. Run an Agent on Each Machine
 
