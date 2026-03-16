@@ -53,7 +53,7 @@ def load_config(cli_args: argparse.Namespace) -> dict[str, Any]:
         cfg["token"] = cli_args.token
     if cli_args.machine:
         cfg["machine_name"] = cli_args.machine
-    cfg.setdefault("server_url", "http://localhost:30002")
+    cfg.setdefault("server_url", "http://localhost:8420")
     cfg.setdefault("token", "")
     cfg.setdefault("machine_name", platform.node())
     cfg.setdefault("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL)

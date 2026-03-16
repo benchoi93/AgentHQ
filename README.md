@@ -44,7 +44,7 @@ cp env.example .env
 # Edit .env: set AGENTHQ_TOKEN to a strong secret
 
 docker compose up -d --build
-# Access at http://<your-server>:30002
+# Access at http://<your-server>:8420
 ```
 
 ### 2. Run an Agent on Each Machine
@@ -58,7 +58,7 @@ cp config.yaml.example config.yaml
 Edit `config.yaml`:
 
 ```yaml
-server_url: "http://<your-server>:30002"
+server_url: "http://<your-server>:8420"
 token: "your-token-here"        # must match AGENTHQ_TOKEN
 machine_name: "my-gpu-server"   # human-readable name
 ```
@@ -118,14 +118,14 @@ Click the **+** button in the dashboard, select a machine, pick a project from t
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENTHQ_TOKEN` | (required) | Shared auth token for agents and the web UI |
-| `AGENTHQ_PORT` | `30002` | Port exposed by Docker |
+| `AGENTHQ_PORT` | `8420` | Port exposed by Docker |
 | `AGENTHQ_DB_PATH` | `agenthq.db` | SQLite database path |
 
 ### Agent Configuration (`config.yaml`)
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `server_url` | `http://localhost:30002` | AgentHQ server URL |
+| `server_url` | `http://localhost:8420` | AgentHQ server URL |
 | `token` | (required) | Must match `AGENTHQ_TOKEN` |
 | `machine_name` | hostname | Human-readable machine name |
 | `heartbeat_interval` | `10` | Seconds between heartbeats |

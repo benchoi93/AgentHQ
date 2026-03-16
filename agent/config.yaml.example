@@ -2,7 +2,7 @@
 # Copy to config.yaml and edit values.
 
 # Server URL (AgentHQ backend)
-server_url: "http://localhost:30002"
+server_url: "http://localhost:8420"
 
 # Authentication token (must match server's AGENTHQ_TOKEN)
 token: "your-token-here"
