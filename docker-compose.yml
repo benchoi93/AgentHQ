@@ -15,7 +15,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "${AGENTHQ_PORT:-8420}:8420"
+      - "${AGENTHQ_PORT:-30002}:30002"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

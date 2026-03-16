@@ -21,6 +21,3 @@ agent/agent.pid
 agent/agent.log.err
 agent/.claude/
 
-# Project-specific dev instructions
-CLAUDE.md
-

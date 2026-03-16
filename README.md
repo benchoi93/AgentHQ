@@ -38,61 +38,14 @@ Each **agent** runs on a machine, heartbeats to the server, and manages tmux ses
 
 ### 1. Deploy the Server
 
-#### Option A: Self-Hosted (Docker Compose)
-
-Best for lab servers, on-prem machines, or any box you control.
-
 ```bash
-git clone git@github.com:benchoi93/AgentHQ.git && cd AgentHQ
+git clone git@github.com:UMN-Choi-Lab/AgentHQ.git && cd AgentHQ
 cp env.example .env
 # Edit .env: set AGENTHQ_TOKEN to a strong secret
 
 docker compose up -d --build
-# Access at http://<your-server>:8420
+# Access at http://<your-server>:30002
 ```
-
-#### Option B: Fly.io
-
-Good for a persistent, publicly accessible server with minimal setup. Free tier includes 3 shared VMs and 1 GB persistent volume.
-
-```bash
-# Install flyctl: https://fly.io/docs/hands-on/install-flyctl/
-fly auth login
-
-# Clone and launch
-git clone git@github.com:benchoi93/AgentHQ.git && cd AgentHQ
-fly launch --no-deploy          # creates fly.toml — pick a region near you
-
-# Set your auth token
-fly secrets set AGENTHQ_TOKEN="your-strong-secret"
-
-# Create a persistent volume for SQLite
-fly volumes create agenthq_data --size 1 --region <your-region>
-
-# Deploy
-fly deploy
-
-# Access at https://<your-app>.fly.dev
-```
-
-Add to your `fly.toml`:
-```toml
-[mounts]
-  source = "agenthq_data"
-  destination = "/app/data"
-
-[env]
-  AGENTHQ_DB_PATH = "/app/data/agenthq.db"
-```
-
-#### Option C: Railway / Render
-
-Both support Docker-based deploys with persistent storage:
-
-- **[Railway](https://railway.app)** — Connect your GitHub repo, add `AGENTHQ_TOKEN` as an env variable, and deploy. Attach a volume for SQLite persistence.
-- **[Render](https://render.com)** — Create a Web Service from Docker, set environment variables, and add a persistent disk mounted at `/app/data`.
-
-> **Note:** AgentHQ uses SQLite, so the server needs a persistent filesystem. Serverless platforms (Vercel, AWS Lambda) won't work without switching to PostgreSQL.
 
 ### 2. Run an Agent on Each Machine
 
@@ -105,7 +58,7 @@ cp config.yaml.example config.yaml
 Edit `config.yaml`:
 
 ```yaml
-server_url: "http://<your-server>:8420"
+server_url: "http://<your-server>:30002"
 token: "your-token-here"        # must match AGENTHQ_TOKEN
 machine_name: "my-gpu-server"   # human-readable name
 ```
@@ -113,27 +66,14 @@ machine_name: "my-gpu-server"   # human-readable name
 Run the agent:
 
 ```bash
-# Linux/macOS — managed background process with auto-restart
-cd agent
-./run.sh start        # start agent in background
-./run.sh status       # check if running (PID, uptime)
-./run.sh log          # tail the log file
-./run.sh stop         # graceful shutdown
-./run.sh restart      # stop + start
-```
-
-```powershell
-# Windows (PowerShell)
-cd agent
-.\run.ps1 start       # start agent in background
-.\run.ps1 status      # check if running (PID, CPU, memory)
-.\run.ps1 stop         # stop agent
-```
-
-Or run directly in the foreground:
-
-```bash
+# Foreground
 python -m agenthq_agent --config config.yaml
+
+# Background (persists after logout)
+nohup python -m agenthq_agent --config config.yaml > agent.log 2>&1 &
+
+# Or in tmux (can reattach later)
+tmux new-session -d -s agenthq-agent 'python -m agenthq_agent --config config.yaml'
 ```
 
 The agent will appear in the dashboard within 10 seconds.
@@ -178,14 +118,14 @@ Click the **+** button in the dashboard, select a machine, pick a project from t
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENTHQ_TOKEN` | (required) | Shared auth token for agents and the web UI |
-| `AGENTHQ_PORT` | `8420` | Port exposed by Docker |
+| `AGENTHQ_PORT` | `30002` | Port exposed by Docker |
 | `AGENTHQ_DB_PATH` | `agenthq.db` | SQLite database path |
 
 ### Agent Configuration (`config.yaml`)
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `server_url` | `http://localhost:8420` | AgentHQ server URL |
+| `server_url` | `http://localhost:30002` | AgentHQ server URL |
 | `token` | (required) | Must match `AGENTHQ_TOKEN` |
 | `machine_name` | hostname | Human-readable machine name |
 | `heartbeat_interval` | `10` | Seconds between heartbeats |

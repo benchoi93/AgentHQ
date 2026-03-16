@@ -53,7 +53,7 @@ def load_config(cli_args: argparse.Namespace) -> dict[str, Any]:
         cfg["token"] = cli_args.token
     if cli_args.machine:
         cfg["machine_name"] = cli_args.machine
-    cfg.setdefault("server_url", "http://localhost:8420")
+    cfg.setdefault("server_url", "http://localhost:30002")
     cfg.setdefault("token", "")
     cfg.setdefault("machine_name", platform.node())
     cfg.setdefault("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL)
@@ -155,8 +155,8 @@ def _decode_claude_project_dir(entry: Path) -> tuple[str, str]:
     """Decode a .claude/projects/ directory name into (project_name, project_path).
 
     Claude encodes absolute paths in two formats:
-      Linux:   -home-chois-gitsrcs-AIOrch        (leading '-' = '/')
-      Windows: C--Users-chois-Gitsrcs-AIOrch      (drive letter, '--' = ':\\')
+      Linux:   -home-chois-gitsrcs-AgentHQ        (leading '-' = '/')
+      Windows: C--Users-chois-Gitsrcs-AgentHQ      (drive letter, '--' = ':\\')
 
     Since dir names may contain '-' or '_', we greedily reconstruct
     the path by checking which segments exist on disk.
