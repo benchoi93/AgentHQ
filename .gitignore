@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+.env
+node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.vite/
+*.log
+*.pid
+*.egg-info/
+temp
+sample2.png
+
+# Agent runtime files
+agent/config.yaml
+agent/managed_sessions.json
+agent/.agent.pid
+agent/agent.pid
+agent/agent.log.err
+agent/.claude/
+
+# Project-specific dev instructions
+CLAUDE.md
+

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agenthq-agent"
+version = "0.1.0"
+description = "AgentHQ agent — session discovery, log streaming, chat relay, file browsing, terminal capture"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "pyyaml>=6.0",
+    "pywinpty>=2.0; sys_platform == 'win32'",
+]
+
+[project.scripts]
+agenthq-agent = "agenthq_agent.cli:main"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agenthq_agent*"]

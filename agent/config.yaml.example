@@ -1,0 +1,40 @@
+# AgentHQ Agent Configuration
+# Copy to config.yaml and edit values.
+
+# Server URL (AgentHQ backend)
+server_url: "http://localhost:8420"
+
+# Authentication token (must match server's AGENTHQ_TOKEN)
+token: "your-token-here"
+
+# Human-readable name for this machine
+machine_name: "my-machine"
+
+# Heartbeat interval in seconds
+heartbeat_interval: 10
+
+# Log file poll interval in seconds
+log_poll_interval: 2
+
+# Terminal capture poll interval in seconds
+terminal_poll_interval: 1
+
+# .claude/ folder sync interval in seconds (set sync_enabled: false to disable)
+sync_interval: 30
+sync_enabled: true
+
+# Git-based .claude/ sync — uses your existing git repo in ~/.claude/
+# Periodically commits, pulls (rebase), and pushes. On conflicts, uses
+# Claude CLI (`claude -p`) to intelligently merge settings files.
+git_sync_enabled: false
+git_sync_interval: 300  # seconds (5 minutes)
+
+# Manually registered sessions (for sessions that can't be auto-discovered)
+extra_sessions: []
+  # - name: "my-project"
+  #   path: "/home/user/projects/my-project"
+
+# Additional .claude/projects/ directories to scan (useful for WSL or multi-user)
+# On WSL, the agent auto-detects the Windows user's .claude/projects/ path.
+extra_project_dirs: []
+  # - "/mnt/c/Users/myuser/.claude/projects"
