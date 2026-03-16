@@ -66,14 +66,27 @@ machine_name: "my-gpu-server"   # human-readable name
 Run the agent:
 
 ```bash
-# Foreground
+# Linux/macOS — managed background process with auto-restart
+cd agent
+./run.sh start        # start agent in background
+./run.sh status       # check if running (PID, uptime)
+./run.sh log          # tail the log file
+./run.sh stop         # graceful shutdown
+./run.sh restart      # stop + start
+```
+
+```powershell
+# Windows (PowerShell)
+cd agent
+.\run.ps1 start       # start agent in background
+.\run.ps1 status      # check if running (PID, CPU, memory)
+.\run.ps1 stop         # stop agent
+```
+
+Or run directly in the foreground:
+
+```bash
 python -m agenthq_agent --config config.yaml
-
-# Background (persists after logout)
-nohup python -m agenthq_agent --config config.yaml > agent.log 2>&1 &
-
-# Or in tmux (can reattach later)
-tmux new-session -d -s agenthq-agent 'python -m agenthq_agent --config config.yaml'
 ```
 
 The agent will appear in the dashboard within 10 seconds.
