@@ -39,8 +39,6 @@ export default function SessionDetail() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [actionPending, setActionPending] = useState<string | null>(null);
-  // Extra terminal session IDs added via "+" (the primary one comes from the URL)
-  const [extraTerminals, setExtraTerminals] = useState<string[]>([]);
 
   const fileReloadRef = useRef<(() => void) | null>(null);
 
@@ -48,18 +46,28 @@ export default function SessionDetail() {
 
   const files = useWebSocket<FileMessage>({ url: filesWsUrl });
 
-  // All terminal IDs to render in the grid: primary + extras (that still exist and are running)
-  const terminalIds = useMemo(() => {
-    if (!id) return [];
-    const ids = [id];
-    const runningIds = new Set(sessions.filter(s => s.status === "running").map(s => s.id));
-    for (const eid of extraTerminals) {
-      if (eid !== id && runningIds.has(eid)) {
-        ids.push(eid);
+  // Deduplicated sidebar: one entry per unique path+machine (pick first by id)
+  const sidebarSessions = useMemo(() => {
+    const seen = new Map<string, Session>();
+    for (const s of sessions) {
+      const key = `${s.machine}:${s.path}`;
+      if (!seen.has(key)) {
+        seen.set(key, s);
       }
     }
-    return ids;
-  }, [id, extraTerminals, sessions]);
+    return Array.from(seen.values());
+  }, [sessions]);
+
+  // All sibling terminals for the current session (same path+machine, running)
+  const siblingTerminals = useMemo(() => {
+    if (!session) return id ? [id] : [];
+    return sessions
+      .filter(s => s.path === session.path && s.machine === session.machine && s.status === "running")
+      .map(s => s.id);
+  }, [session, sessions, id]);
+
+  // Use siblings if found, otherwise just the primary session
+  const terminalIds = siblingTerminals.length > 0 ? siblingTerminals : (id ? [id] : []);
 
   // Grid class based on terminal count
   const gridClass = useMemo(() => {
@@ -74,38 +82,51 @@ export default function SessionDetail() {
     fileReloadRef.current?.();
   }, []);
 
+  const addTerminalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const handleAddTerminal = useCallback(async () => {
-    if (!session || actionPending) return;
+    if (!session || actionPending || terminalIds.length >= 4) return;
     setActionPending("add");
     try {
       await createSession({
         machine: session.machine,
         directory: session.path,
       });
-      // Poll for the new session to appear
-      setTimeout(async () => {
+      // Poll every 2s for up to 30s until the new session appears
+      let attempts = 0;
+      const knownIds = new Set(terminalIds);
+      addTerminalPollRef.current = setInterval(async () => {
+        attempts++;
         try {
           const data = await getSessions();
           setSessions(data);
-          // Find the new session — same path+machine, not already in our grid
-          const existing = new Set([id, ...extraTerminals]);
-          const newSession = data.find(
+          const found = data.some(
             s => s.path === session.path && s.machine === session.machine
-              && s.status === "running" && !existing.has(s.id)
+              && s.status === "running" && !knownIds.has(s.id)
           );
-          if (newSession) {
-            setExtraTerminals(prev => [...prev, newSession.id]);
+          if (found || attempts >= 15) {
+            if (addTerminalPollRef.current) clearInterval(addTerminalPollRef.current);
+            addTerminalPollRef.current = null;
+            setActionPending(null);
           }
-        } catch { /* ignore */ }
-        setActionPending(null);
-      }, 3500);
+        } catch {
+          if (attempts >= 15) {
+            if (addTerminalPollRef.current) clearInterval(addTerminalPollRef.current);
+            addTerminalPollRef.current = null;
+            setActionPending(null);
+          }
+        }
+      }, 2000);
     } catch {
       setActionPending(null);
     }
-  }, [session, actionPending, id, extraTerminals]);
+  }, [session, actionPending, terminalIds]);
 
-  const handleRemoveTerminal = useCallback((termId: string) => {
-    setExtraTerminals(prev => prev.filter(t => t !== termId));
+  // Cleanup poll on unmount
+  useEffect(() => {
+    return () => {
+      if (addTerminalPollRef.current) clearInterval(addTerminalPollRef.current);
+    };
   }, []);
 
   const handleAction = useCallback(async (action: "restart" | "stop" | "start") => {
@@ -129,16 +150,13 @@ export default function SessionDetail() {
   }, [id, actionPending]);
 
   // Fetch current session + poll for status updates
-  // Also resets state when id changes (consolidated to avoid race conditions)
   useEffect(() => {
     if (!id) return;
-    // Reset state for the new session
     setSelectedFile(null);
     setSession(null);
     setError("");
     setLoading(true);
     setReloadKey((k) => k + 1);
-    setExtraTerminals([]);
 
     let cancelled = false;
     async function fetchDetail() {
@@ -225,7 +243,6 @@ export default function SessionDetail() {
                   {session.project}
                 </span>
                 <div className="flex items-center gap-1.5 text-xs text-slate-500 ml-auto flex-shrink-0">
-                  {/* Session control buttons */}
                   {isStopped ? (
                     <button
                       onClick={() => handleAction("start")}
@@ -273,7 +290,7 @@ export default function SessionDetail() {
 
         {sidebarOpen && (
           <>
-            {/* === COL 1: Session / project list === */}
+            {/* === COL 1: Session list (deduplicated by path+machine) === */}
             <div className="w-48 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/30">
               <div className="px-3 py-1.5 border-b border-slate-800 flex-shrink-0">
                 <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">
@@ -282,7 +299,7 @@ export default function SessionDetail() {
               </div>
               <div className="flex-1 overflow-y-auto">
                 {Object.entries(
-                  sessions.reduce<Record<string, typeof sessions>>((acc, s) => {
+                  sidebarSessions.reduce<Record<string, Session[]>>((acc, s) => {
                     const key = s.machine || "Unknown";
                     if (!acc[key]) acc[key] = [];
                     acc[key].push(s);
@@ -297,29 +314,41 @@ export default function SessionDetail() {
                           {machineName}
                         </span>
                       </div>
-                      {machineSessions.map((s) => (
-                        <button
-                          key={s.id}
-                          onClick={() => {
-                            if (s.id === id) {
-                              setReloadKey((k) => k + 1);
-                              fileReloadRef.current?.();
-                            } else {
-                              navigate(`/session/${s.id}`);
-                            }
-                          }}
-                          className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors border-l-2
-                                     ${s.id === id
-                                       ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
-                                       : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
-                                     }`}
-                        >
-                          <Circle
-                            className={`w-1.5 h-1.5 flex-shrink-0 fill-current ${STATUS_COLORS[s.status] || "text-slate-600"}`}
-                          />
-                          <div className="text-xs font-medium truncate">{s.project}</div>
-                        </button>
-                      ))}
+                      {machineSessions.map((s) => {
+                        // Count sibling terminals for this project
+                        const siblings = sessions.filter(
+                          ss => ss.path === s.path && ss.machine === s.machine && ss.status === "running"
+                        ).length;
+                        const isActive = s.id === id || (session && s.path === session.path && s.machine === session.machine);
+                        return (
+                          <button
+                            key={s.id}
+                            onClick={() => {
+                              if (isActive) {
+                                setReloadKey((k) => k + 1);
+                                fileReloadRef.current?.();
+                              } else {
+                                navigate(`/session/${s.id}`);
+                              }
+                            }}
+                            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors border-l-2
+                                       ${isActive
+                                         ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
+                                         : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
+                                       }`}
+                          >
+                            <Circle
+                              className={`w-1.5 h-1.5 flex-shrink-0 fill-current ${STATUS_COLORS[s.status] || "text-slate-600"}`}
+                            />
+                            <div className="text-xs font-medium truncate flex-1">{s.project}</div>
+                            {siblings > 1 && (
+                              <span className="text-[9px] text-slate-600 bg-slate-800 px-1 rounded">
+                                {siblings}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   ))}
               </div>
@@ -386,7 +415,7 @@ export default function SessionDetail() {
             </div>
           )}
 
-          {/* Terminal grid (bottom half, or full height if no file) */}
+          {/* Terminal grid */}
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex items-center border-b border-slate-800 flex-shrink-0 px-2">
               <span className="text-[11px] font-medium text-slate-400 px-1 py-1.5">
@@ -426,18 +455,8 @@ export default function SessionDetail() {
                   </button>
                 </div>
               ) : (
-                terminalIds.map((termId, idx) => (
-                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 relative min-h-0 min-w-0">
-                    {/* Close button for extra terminals (not the primary) */}
-                    {idx > 0 && (
-                      <button
-                        onClick={() => handleRemoveTerminal(termId)}
-                        title="Remove terminal pane"
-                        className="absolute top-1 right-1 z-10 p-0.5 rounded bg-slate-800/80 text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition-colors"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
+                terminalIds.map((termId) => (
+                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0">
                     <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm">Loading terminal...</div>}>
                       <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} />
                     </Suspense>
