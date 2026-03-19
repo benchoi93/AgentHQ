@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react";
+import { useEffect, useState, useRef, useCallback, lazy, Suspense, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -10,9 +10,10 @@ import {
   FolderOpen,
   PanelLeftClose,
   PanelLeft,
+  Plus,
   X,
 } from "lucide-react";
-import { getSession, getSessions, getWsUrl, restartSession, stopSession } from "../api";
+import { createSession, getSession, getSessions, getWsUrl, restartSession, stopSession } from "../api";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -38,17 +39,73 @@ export default function SessionDetail() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [actionPending, setActionPending] = useState<string | null>(null);
+  // Extra terminal session IDs added via "+" (the primary one comes from the URL)
+  const [extraTerminals, setExtraTerminals] = useState<string[]>([]);
 
   const fileReloadRef = useRef<(() => void) | null>(null);
 
   const filesWsUrl = id ? getWsUrl(`/ws/files/${id}`) : null;
-  const terminalWsUrl = id ? getWsUrl(`/ws/terminal/${id}`) : null;
 
   const files = useWebSocket<FileMessage>({ url: filesWsUrl });
+
+  // All terminal IDs to render in the grid: primary + extras (that still exist and are running)
+  const terminalIds = useMemo(() => {
+    if (!id) return [];
+    const ids = [id];
+    const runningIds = new Set(sessions.filter(s => s.status === "running").map(s => s.id));
+    for (const eid of extraTerminals) {
+      if (eid !== id && runningIds.has(eid)) {
+        ids.push(eid);
+      }
+    }
+    return ids;
+  }, [id, extraTerminals, sessions]);
+
+  // Grid class based on terminal count
+  const gridClass = useMemo(() => {
+    const n = terminalIds.length;
+    if (n <= 1) return "grid-cols-1 grid-rows-1";
+    if (n === 2) return "grid-cols-2 grid-rows-1";
+    return "grid-cols-2 grid-rows-2"; // 3 or 4
+  }, [terminalIds.length]);
 
   const handleReload = useCallback(() => {
     setReloadKey((k) => k + 1);
     fileReloadRef.current?.();
+  }, []);
+
+  const handleAddTerminal = useCallback(async () => {
+    if (!session || actionPending) return;
+    setActionPending("add");
+    try {
+      await createSession({
+        machine: session.machine,
+        directory: session.path,
+      });
+      // Poll for the new session to appear
+      setTimeout(async () => {
+        try {
+          const data = await getSessions();
+          setSessions(data);
+          // Find the new session — same path+machine, not already in our grid
+          const existing = new Set([id, ...extraTerminals]);
+          const newSession = data.find(
+            s => s.path === session.path && s.machine === session.machine
+              && s.status === "running" && !existing.has(s.id)
+          );
+          if (newSession) {
+            setExtraTerminals(prev => [...prev, newSession.id]);
+          }
+        } catch { /* ignore */ }
+        setActionPending(null);
+      }, 3500);
+    } catch {
+      setActionPending(null);
+    }
+  }, [session, actionPending, id, extraTerminals]);
+
+  const handleRemoveTerminal = useCallback((termId: string) => {
+    setExtraTerminals(prev => prev.filter(t => t !== termId));
   }, []);
 
   const handleAction = useCallback(async (action: "restart" | "stop" | "start") => {
@@ -81,6 +138,7 @@ export default function SessionDetail() {
     setError("");
     setLoading(true);
     setReloadKey((k) => k + 1);
+    setExtraTerminals([]);
 
     let cancelled = false;
     async function fetchDetail() {
@@ -300,7 +358,7 @@ export default function SessionDetail() {
           </>
         )}
 
-        {/* === MAIN: split top/bottom — file viewer + terminal === */}
+        {/* === MAIN: split top/bottom — file viewer + terminal grid === */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
 
           {/* File viewer (top half, only when file is open) */}
@@ -328,21 +386,34 @@ export default function SessionDetail() {
             </div>
           )}
 
-          {/* Terminal (bottom half, or full height if no file) */}
+          {/* Terminal grid (bottom half, or full height if no file) */}
           <div className="flex-1 flex flex-col min-h-0">
             <div className="flex items-center border-b border-slate-800 flex-shrink-0 px-2">
-              <span className="text-[11px] font-medium text-slate-400 px-1 py-1.5">Terminal</span>
+              <span className="text-[11px] font-medium text-slate-400 px-1 py-1.5">
+                Terminals
+                {terminalIds.length > 1 && (
+                  <span className="text-slate-600 ml-1">({terminalIds.length})</span>
+                )}
+              </span>
+              <button
+                onClick={handleAddTerminal}
+                disabled={!!actionPending || !isRunning || terminalIds.length >= 4}
+                title={terminalIds.length >= 4 ? "Maximum 4 terminals" : "Add terminal"}
+                className="ml-auto p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-colors disabled:opacity-30"
+              >
+                <Plus className={`w-3 h-3 ${actionPending === "add" ? "animate-pulse" : ""}`} />
+              </button>
               <button
                 onClick={handleReload}
                 title="Reload"
-                className="ml-auto p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-colors"
+                className="p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-colors"
               >
                 <RefreshCw className="w-3 h-3" />
               </button>
             </div>
-            <div className="flex-1 min-h-0">
+            <div className={`flex-1 min-h-0 grid ${gridClass} gap-px bg-slate-800`}>
               {isStopped ? (
-                <div className="h-full flex flex-col items-center justify-center text-slate-500 text-sm gap-3">
+                <div className="bg-slate-950 h-full flex flex-col items-center justify-center text-slate-500 text-sm gap-3">
                   <Square className="w-8 h-8 text-slate-600" />
                   <p>Session stopped</p>
                   <button
@@ -355,9 +426,23 @@ export default function SessionDetail() {
                   </button>
                 </div>
               ) : (
-                <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm">Loading terminal...</div>}>
-                  <TerminalView key={`term-${id}-${reloadKey}`} wsUrl={terminalWsUrl} />
-                </Suspense>
+                terminalIds.map((termId, idx) => (
+                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 relative min-h-0 min-w-0">
+                    {/* Close button for extra terminals (not the primary) */}
+                    {idx > 0 && (
+                      <button
+                        onClick={() => handleRemoveTerminal(termId)}
+                        title="Remove terminal pane"
+                        className="absolute top-1 right-1 z-10 p-0.5 rounded bg-slate-800/80 text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition-colors"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                    <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm">Loading terminal...</div>}>
+                      <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} />
+                    </Suspense>
+                  </div>
+                ))
               )}
             </div>
           </div>
