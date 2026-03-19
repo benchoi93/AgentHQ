@@ -114,6 +114,11 @@ class TmuxBackend(SessionBackend):
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
             )
+            # Enable mouse so scroll wheel works via WebSocket terminal
+            subprocess.run(
+                ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
+                capture_output=True, timeout=5,
+            )
             self.sessions[sid] = {
                 "project": project,
                 "path": directory,
@@ -156,6 +161,10 @@ class TmuxBackend(SessionBackend):
                 ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
+            )
+            subprocess.run(
+                ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
+                capture_output=True, timeout=5,
             )
             self.sessions[session_id] = {
                 "project": project,
@@ -441,6 +450,12 @@ class TmuxBackend(SessionBackend):
         # size instead of the smallest, then attach.
         subprocess.run(
             ["tmux", "set-option", "-t", pane, "window-size", "latest"],
+            capture_output=True, timeout=5,
+        )
+        # Enable mouse mode so scroll wheel events are forwarded to tmux
+        # (without this, xterm.js has nothing to scroll — tmux uses alternate screen)
+        subprocess.run(
+            ["tmux", "set-option", "-t", pane, "mouse", "on"],
             capture_output=True, timeout=5,
         )
         await self._pty_terminal(
