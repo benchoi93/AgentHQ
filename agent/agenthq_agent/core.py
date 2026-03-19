@@ -114,8 +114,10 @@ IS_WSL = _is_wsl()
 # Session Discovery
 # ---------------------------------------------------------------------------
 
-def _session_id(project_path: str, pid: int | None = None) -> str:
+def _session_id(project_path: str, pid: int | None = None, suffix: int = 0) -> str:
     raw = f"{platform.node()}:{project_path}"
+    if suffix > 0:
+        raw += f":{suffix}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 

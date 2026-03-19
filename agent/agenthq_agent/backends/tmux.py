@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import pty
+import select
 import signal
 import struct
 import subprocess
@@ -85,14 +86,18 @@ class TmuxBackend(SessionBackend):
             return {"ok": False, "error": f"Directory not found: {directory}"}
 
         project = name or path.name
-        sid = _session_id(directory)
 
-        if sid in self.sessions:
-            info = self.sessions[sid]
-            if self._tmux_alive(info["tmux_name"]):
-                return {"ok": True, "session_id": sid, "message": "Session already running"}
+        # Find next available session ID for this path.
+        # suffix=0 keeps backward compat for the first session.
+        suffix = 0
+        sid = _session_id(directory, suffix=suffix)
+        while sid in self.sessions and self._tmux_alive(self.sessions[sid]["tmux_name"]):
+            suffix += 1
+            sid = _session_id(directory, suffix=suffix)
 
-        tmux_name = f"agenthq-{project}".replace(" ", "-").replace("/", "-")[:50]
+        base_tmux = f"agenthq-{project}".replace(" ", "-").replace("/", "-")[:50]
+        tmux_name = base_tmux if suffix == 0 else f"{base_tmux}-{suffix}"[:50]
+
         # If tmux session already exists (e.g. agent restarted), adopt it
         if self._tmux_alive(tmux_name):
             self.sessions[sid] = {
@@ -360,12 +365,28 @@ class TmuxBackend(SessionBackend):
                 os.close(slave_fd)
                 log.info("PTY started: %s (%dx%d)", label, init_cols, init_rows)
 
+                def _pty_read_coalesced(fd: int, max_bytes: int = 16384,
+                                       linger_s: float = 0.008) -> bytes:
+                    """Read from PTY, batching data that arrives within linger_s."""
+                    buf = bytearray()
+                    while len(buf) < max_bytes:
+                        if buf:
+                            # Already have data — wait briefly for more
+                            ready, _, _ = select.select([fd], [], [], linger_s)
+                            if not ready:
+                                break
+                        chunk = os.read(fd, max_bytes - len(buf))
+                        if not chunk:
+                            break
+                        buf.extend(chunk)
+                    return bytes(buf)
+
                 async def pty_reader() -> None:
                     loop = asyncio.get_event_loop()
                     while True:
                         try:
                             data = await loop.run_in_executor(
-                                None, os.read, master_fd, 4096,
+                                None, _pty_read_coalesced, master_fd,
                             )
                         except OSError:
                             break

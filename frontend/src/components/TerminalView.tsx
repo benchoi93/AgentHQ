@@ -48,6 +48,10 @@ export default function TerminalView({ wsUrl }: TerminalViewProps) {
         selectionBackground: "#334155",
       },
       allowProposedApi: true,
+      scrollback: 10000,
+      scrollOnUserInput: true,
+      scrollSensitivity: 3,
+      fastScrollSensitivity: 10,
     });
 
     const fitAddon = new FitAddon();

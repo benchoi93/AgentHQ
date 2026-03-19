@@ -13,6 +13,10 @@ interface UseTerminalWebSocketReturn {
   connected: boolean;
 }
 
+// Coalescing window for batching rapid keystrokes (ms).
+// Keeps interactive typing snappy while reducing message count during pastes.
+const INPUT_COALESCE_MS = 4;
+
 export function useTerminalWebSocket({
   url,
   onData,
@@ -26,19 +30,30 @@ export function useTerminalWebSocket({
   const onDataRef = useRef(onData);
   onDataRef.current = onData;
 
-  const sendInput = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      // base64 encode via TextEncoder to handle UTF-8 correctly
-      // (btoa() only supports Latin-1 and breaks on multi-byte chars)
-      const bytes = new TextEncoder().encode(data);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const encoded = btoa(binary);
-      wsRef.current.send(JSON.stringify({ type: "input", data: encoded }));
+  // Input coalescing refs — accumulate keystrokes and flush after a short delay
+  const inputBufRef = useRef("");
+  const inputFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushInput = useCallback(() => {
+    inputFlushTimer.current = null;
+    const buf = inputBufRef.current;
+    if (!buf) return;
+    inputBufRef.current = "";
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    const bytes = new TextEncoder().encode(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
     }
+    wsRef.current.send(JSON.stringify({ type: "input", data: btoa(binary) }));
   }, []);
+
+  const sendInput = useCallback((data: string) => {
+    inputBufRef.current += data;
+    if (!inputFlushTimer.current) {
+      inputFlushTimer.current = setTimeout(flushInput, INPUT_COALESCE_MS);
+    }
+  }, [flushInput]);
 
   const sendResize = useCallback((cols: number, rows: number) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -99,6 +114,12 @@ export function useTerminalWebSocket({
 
     return () => {
       disposed = true;
+      // Flush any pending input before tearing down
+      if (inputFlushTimer.current) {
+        clearTimeout(inputFlushTimer.current);
+        inputFlushTimer.current = null;
+      }
+      flushInput();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
       }
@@ -107,7 +128,7 @@ export function useTerminalWebSocket({
         wsRef.current = null;
       }
     };
-  }, [url, reconnectInterval, maxReconnectAttempts]);
+  }, [url, reconnectInterval, maxReconnectAttempts, flushInput]);
 
   return { sendInput, sendResize, connected };
 }

@@ -156,10 +156,13 @@ class WindowsBackend(SessionBackend):
             return {"ok": False, "error": f"Directory not found: {directory}"}
 
         project = name or path.name
-        sid = _session_id(directory)
 
-        if sid in self.sessions:
-            return {"ok": True, "session_id": sid, "message": "Session already registered"}
+        # Find next available session ID for this path
+        suffix = 0
+        sid = _session_id(directory, suffix=suffix)
+        while sid in self.sessions:
+            suffix += 1
+            sid = _session_id(directory, suffix=suffix)
 
         self.sessions[sid] = {
             "project": project,
