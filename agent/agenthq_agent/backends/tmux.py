@@ -58,6 +58,20 @@ class TmuxBackend(SessionBackend):
             log.debug("Failed to save managed sessions: %s", exc)
 
     # -----------------------------------------------------------------------
+    # Tmux defaults for AgentHQ sessions
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_tmux_defaults(tmux_name: str) -> None:
+        """Apply AgentHQ defaults to a tmux session: mouse, scrollback, etc."""
+        for cmd in [
+            ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
+            ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "off"],
+            ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
+        ]:
+            subprocess.run(cmd, capture_output=True, timeout=5)
+
+    # -----------------------------------------------------------------------
     # Session lifecycle
     # -----------------------------------------------------------------------
 
@@ -114,11 +128,7 @@ class TmuxBackend(SessionBackend):
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
             )
-            # Enable mouse so scroll wheel works via WebSocket terminal
-            subprocess.run(
-                ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
-                capture_output=True, timeout=5,
-            )
+            self._apply_tmux_defaults(tmux_name)
             self.sessions[sid] = {
                 "project": project,
                 "path": directory,
@@ -162,10 +172,7 @@ class TmuxBackend(SessionBackend):
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
             )
-            subprocess.run(
-                ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
-                capture_output=True, timeout=5,
-            )
+            self._apply_tmux_defaults(tmux_name)
             self.sessions[session_id] = {
                 "project": project,
                 "path": directory,
@@ -453,9 +460,20 @@ class TmuxBackend(SessionBackend):
             capture_output=True, timeout=5,
         )
         # Enable mouse mode so scroll wheel events are forwarded to tmux
-        # (without this, xterm.js has nothing to scroll — tmux uses alternate screen)
         subprocess.run(
             ["tmux", "set-option", "-t", pane, "mouse", "on"],
+            capture_output=True, timeout=5,
+        )
+        # Disable alternate-screen passthrough so all content goes to xterm.js's
+        # normal buffer, enabling scrollback. Without this, full-screen apps
+        # (Claude Code) use the alternate screen and xterm.js scrollback stays empty.
+        subprocess.run(
+            ["tmux", "set-window-option", "-t", pane, "alternate-screen", "off"],
+            capture_output=True, timeout=5,
+        )
+        # Large scrollback for tmux copy-mode history
+        subprocess.run(
+            ["tmux", "set-option", "-t", pane, "history-limit", "50000"],
             capture_output=True, timeout=5,
         )
         await self._pty_terminal(
