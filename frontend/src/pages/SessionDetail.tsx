@@ -13,7 +13,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { createSession, getSession, getSessions, getWsUrl, restartSession, stopSession } from "../api";
+import { createSession, deleteSession, getSession, getSessions, getWsUrl, restartSession, stopSession } from "../api";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -121,6 +121,29 @@ export default function SessionDetail() {
       setActionPending(null);
     }
   }, [session, actionPending, terminalIds]);
+
+  const handleDeleteTerminal = useCallback(async (termId: string) => {
+    if (actionPending) return;
+    // Don't allow deleting the primary session (the one from the URL)
+    if (termId === id) return;
+    setActionPending("delete");
+    try {
+      await stopSession(termId);
+      // Give agent time to stop the tmux session, then delete from server
+      setTimeout(async () => {
+        try {
+          await deleteSession(termId);
+        } catch { /* ignore — might already be gone */ }
+        try {
+          const data = await getSessions();
+          setSessions(data);
+        } catch { /* ignore */ }
+        setActionPending(null);
+      }, 3000);
+    } catch {
+      setActionPending(null);
+    }
+  }, [id, actionPending]);
 
   // Cleanup poll on unmount
   useEffect(() => {
@@ -456,7 +479,17 @@ export default function SessionDetail() {
                 </div>
               ) : (
                 terminalIds.map((termId) => (
-                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0">
+                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0 relative">
+                    {termId !== id && (
+                      <button
+                        onClick={() => handleDeleteTerminal(termId)}
+                        disabled={!!actionPending}
+                        title="Stop and remove terminal"
+                        className="absolute top-1 right-1 z-10 p-0.5 rounded bg-slate-800/80 text-slate-500 hover:text-red-400 hover:bg-slate-700 transition-colors disabled:opacity-30"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
                     <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm">Loading terminal...</div>}>
                       <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} />
                     </Suspense>
