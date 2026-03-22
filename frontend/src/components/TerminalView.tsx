@@ -156,13 +156,13 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     }
   }, [connected, sendResize]);
 
-  // Mobile input bar: send text (pasted or typed) to terminal
+  // Mobile input bar: send text (pasted or typed) to terminal + Enter
   const handleMobileSend = useCallback(() => {
     if (!mobileInput) return;
-    // Send as bracketed paste so shell handles it correctly
-    sendInput(`\x1b[200~${mobileInput}\x1b[201~`);
+    // Send text followed by Enter (\r) so the command executes immediately
+    sendInput(mobileInput + "\r");
     setMobileInput("");
-    // Re-focus input for rapid successive pastes
+    // Re-focus input for rapid successive sends
     mobileInputRef.current?.focus();
   }, [mobileInput, sendInput]);
 
