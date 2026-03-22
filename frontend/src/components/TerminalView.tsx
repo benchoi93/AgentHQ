@@ -28,6 +28,7 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   const sendResizeRef = useRef<(cols: number, rows: number) => void>(() => {});
   const [mobileInput, setMobileInput] = useState("");
   const [inputBarOpen, setInputBarOpen] = useState(false);
+  const [sendFlash, setSendFlash] = useState(false);
   const mobileInputRef = useRef<HTMLInputElement>(null);
 
   const onData = useCallback((data: Uint8Array) => {
@@ -162,16 +163,16 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     // Send text followed by Enter (\r) so the command executes immediately
     sendInput(mobileInput + "\r");
     setMobileInput("");
+    setSendFlash(true);
+    setTimeout(() => setSendFlash(false), 400);
     // Re-focus input for rapid successive sends
-    mobileInputRef.current?.focus();
+    setTimeout(() => mobileInputRef.current?.focus(), 50);
   }, [mobileInput, sendInput]);
 
-  // Send on Enter key in the mobile input
-  const handleMobileKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleMobileSend();
-    }
+  // Handle form submit (works better than onKeyDown on iOS)
+  const handleMobileSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    handleMobileSend();
   }, [handleMobileSend]);
 
   return (
@@ -196,8 +197,12 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
             </button>
           )}
           {inputBarOpen && (
-            <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-slate-900 border-t border-slate-700">
+            <form
+              onSubmit={handleMobileSubmit}
+              className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-slate-900 border-t border-slate-700"
+            >
               <button
+                type="button"
                 onClick={() => setInputBarOpen(false)}
                 className="p-1.5 rounded text-slate-500 active:text-slate-300 transition-colors flex-shrink-0"
               >
@@ -208,8 +213,8 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
                 type="text"
                 value={mobileInput}
                 onChange={(e) => setMobileInput(e.target.value)}
-                onKeyDown={handleMobileKeyDown}
                 placeholder="Type or paste here..."
+                enterKeyHint="send"
                 autoComplete="off"
                 autoCorrect="off"
                 autoCapitalize="off"
@@ -219,14 +224,17 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
                 style={{ fontSize: "16px" }}
               />
               <button
-                onClick={handleMobileSend}
+                type="submit"
                 disabled={!mobileInput}
-                className="p-2 rounded-lg bg-blue-600 text-white active:bg-blue-500 transition-colors
-                           disabled:bg-slate-700 disabled:text-slate-500 flex-shrink-0"
+                className={`p-2 rounded-lg text-white transition-colors flex-shrink-0
+                           ${sendFlash
+                             ? "bg-green-600"
+                             : "bg-blue-600 active:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500"
+                           }`}
               >
                 <Send className="w-4 h-4" />
               </button>
-            </div>
+            </form>
           )}
         </>
       )}
