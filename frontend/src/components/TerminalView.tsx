@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Clipboard, Keyboard } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useTerminalWebSocket } from "../hooks/useTerminalWebSocket";
 
@@ -17,11 +18,15 @@ function isTerminalResponse(data: string): boolean {
   return TERMINAL_RESPONSE_RE.test(data);
 }
 
+// Detect touch device (mobile/tablet)
+const IS_TOUCH = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+
 export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sendResizeRef = useRef<(cols: number, rows: number) => void>(() => {});
+  const [pasteFlash, setPasteFlash] = useState(false);
 
   const onData = useCallback((data: Uint8Array) => {
     terminalRef.current?.write(data);
@@ -128,12 +133,63 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     }
   }, [connected, sendResize]);
 
+  // Mobile paste: read clipboard and send as bracketed paste
+  const handleMobilePaste = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        sendInput(`\x1b[200~${text}\x1b[201~`);
+        setPasteFlash(true);
+        setTimeout(() => setPasteFlash(false), 600);
+      }
+    } catch {
+      // Clipboard API denied — try focusing xterm's textarea as fallback
+      const textarea = containerRef.current?.querySelector("textarea");
+      if (textarea) {
+        textarea.focus();
+      }
+    }
+  }, [sendInput]);
+
+  // Mobile keyboard: focus xterm's hidden textarea to trigger virtual keyboard
+  const handleMobileKeyboard = useCallback(() => {
+    const textarea = containerRef.current?.querySelector("textarea");
+    if (textarea) {
+      textarea.focus();
+      textarea.click();
+    }
+  }, []);
+
   return (
     <div className="h-full relative">
       <div ref={containerRef} className="h-full w-full overflow-hidden" />
       {!connected && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60">
           <p className="text-slate-500 text-sm italic">Connecting to terminal...</p>
+        </div>
+      )}
+      {/* Mobile toolbar — paste + keyboard buttons */}
+      {IS_TOUCH && connected && (
+        <div className="absolute bottom-2 right-2 flex gap-1.5 z-10">
+          <button
+            onClick={handleMobileKeyboard}
+            className="p-2.5 rounded-lg bg-slate-800/90 border border-slate-700/50 text-slate-400
+                       active:bg-slate-700 active:text-slate-200 transition-colors"
+            title="Show keyboard"
+          >
+            <Keyboard className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleMobilePaste}
+            className={`p-2.5 rounded-lg border border-slate-700/50 transition-colors
+                       ${pasteFlash
+                         ? "bg-green-800/90 text-green-300"
+                         : "bg-slate-800/90 text-slate-400 active:bg-slate-700 active:text-slate-200"
+                       }`}
+            title="Paste from clipboard"
+          >
+            <Clipboard className="w-4 h-4" />
+          </button>
         </div>
       )}
     </div>
