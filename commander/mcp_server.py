@@ -107,19 +107,21 @@ async def get_session_output(session_id: str, lines: int = 50) -> str:
         async with aiohttp.ClientSession() as http:
             async with http.ws_connect(url) as ws:
                 # Collect buffered messages for up to 3 seconds.
+                async def _collect():
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            if data.get("type") == "output" and "data" in data:
+                                chunks.append(base64.b64decode(data["data"]))
+                        elif msg.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR,
+                        ):
+                            break
+
                 try:
-                    async with asyncio.timeout(3):
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                if data.get("type") == "output" and "data" in data:
-                                    chunks.append(base64.b64decode(data["data"]))
-                            elif msg.type in (
-                                aiohttp.WSMsgType.CLOSED,
-                                aiohttp.WSMsgType.ERROR,
-                            ):
-                                break
-                except TimeoutError:
+                    await asyncio.wait_for(_collect(), timeout=3)
+                except asyncio.TimeoutError:
                     pass  # expected — collection window elapsed
     except Exception as exc:
         return f"Error connecting to terminal WS: {exc}"
@@ -154,19 +156,30 @@ async def send_to_session(session_id: str, message: str) -> str:
                 await ws.send_json({"type": "input", "content": message})
 
                 # Wait up to 5s for confirmation from the agent
+                result_holder = []
+
+                async def _wait_confirm():
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            if data.get("type") == "output":
+                                result_holder.append(
+                                    data.get("content", "(no content)")
+                                )
+                                return
+                        elif msg.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR,
+                        ):
+                            result_holder.append(
+                                "WebSocket closed before confirmation"
+                            )
+                            return
+
                 try:
-                    async with asyncio.timeout(5):
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                if data.get("type") == "output":
-                                    return data.get("content", "(no content)")
-                            elif msg.type in (
-                                aiohttp.WSMsgType.CLOSED,
-                                aiohttp.WSMsgType.ERROR,
-                            ):
-                                return "WebSocket closed before confirmation"
-                except TimeoutError:
+                    await asyncio.wait_for(_wait_confirm(), timeout=5)
+                    return result_holder[0] if result_holder else "Sent"
+                except asyncio.TimeoutError:
                     return "Sent (no confirmation within 5s — message may still be delivered)"
     except Exception as exc:
         return f"Error sending to session: {exc}"

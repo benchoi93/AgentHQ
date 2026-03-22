@@ -64,6 +64,16 @@ Keep Telegram messages concise:
  • paper-draft — idle
 ```
 
+## Machine Aliases
+
+| Alias | Full machine name | Projects root |
+|-------|-------------------|---------------|
+| `gpu01` | cege-u-tol-gpu-01 | `/home/chois/gitsrcs/` |
+| `gpu02` | cege-u-tol-gpu-02 | `/home/chois/gitsrcs/` |
+| `vessl` | workspace-he1tbf9ytu0u-0 | `/home/chois/gitsrcs/` |
+
+When the user says a machine alias, resolve to the full name. If unspecified, default to `vessl`.
+
 ## Slash Commands
 
 When the user sends just `/` or `/help`, reply with the full command list below via `send_telegram`.
@@ -81,14 +91,83 @@ When the user sends just `/` or `/help`, reply with the full command list below 
 | `/logs <project> [N]` | Get last N lines of output (default 50) | `get_session_output(id, N)` → send raw output |
 | `/diff <project>` | Show uncommitted changes | `send_to_session(id, "git diff --stat")` → report |
 | `/compact <project>` | Compact a session's context | `send_to_session(id, "/compact")` → confirm |
-| `/new <machine> <directory> [name]` | Start a new Claude Code session | `create_session(machine, directory, name)` → confirm queued |
+| `/new <machine> <directory> [name]` | Start a session in existing dir | `create_session(machine, directory, name)` → confirm queued |
+| `/explore <idea...>` | Bootstrap a new project from an idea | See **Project Bootstrap Workflow** below |
 | `/machines` | List machines and session counts | `list_machines` tool |
 
 ### Command parsing rules
 
 - Project matching is case-insensitive and supports partial matches (e.g., "highway" → HighwayVLM)
 - If a project name exists on multiple machines, ask the user which one
+- Machine names accept aliases (gpu01, gpu02, vessl) — see table above
 - Unknown commands → reply with "Unknown command. Send / for help."
+
+## Project Bootstrap Workflow (`/explore`)
+
+When the user sends `/explore` (or a natural-language request like "Explore idea of X using repo Y, set it up on Z"), follow this multi-step workflow:
+
+### 1. Parse the request
+
+Extract from the user's message:
+- **idea**: What the project is about (research question, exploration goal)
+- **repo_url** (optional): GitHub URL to clone — auto-detect URLs in the message
+- **machine**: Target machine (default: `vessl`). Detect from keywords like "gpu01", "gpu02", "vessl", or "on <machine>"
+- **project_name**: Derive from repo name or idea keywords (e.g., `MiroFish-TravelSim`). Keep it short, PascalCase
+
+### 2. Confirm with user
+
+Send via Telegram:
+```
+🆕 New project setup:
+ 📁 <project_name>
+ 🖥 <machine>
+ 🔗 <repo_url or "no repo">
+ 💡 <idea summary>
+
+Proceed? (yes/no)
+```
+
+### 3. Execute setup (after user confirms)
+
+Use an **existing session on the target machine** (prefer dot-claude or AgentHQ session) to run setup commands via `send_to_session`:
+
+```bash
+# Step 1: Create directory and clone (if repo)
+cd /home/chois/gitsrcs && git clone <repo_url> <project_name>
+# OR if no repo:
+mkdir -p /home/chois/gitsrcs/<project_name> && cd /home/chois/gitsrcs/<project_name> && git init
+```
+
+### 4. Create session
+
+Call `create_session(machine, "/home/chois/gitsrcs/<project_name>", "<project_name>")`.
+
+### 5. Send initial prompt to the new session
+
+Once the session appears (check on next heartbeat), send an initial prompt via `send_to_session` that tells Claude Code to:
+
+```
+Read through this codebase and set up a CLAUDE.md. The research goal is: <idea>
+
+Focus the CLAUDE.md on:
+- Project overview and research goal
+- Key components and architecture
+- How to run/build/test
+- Research directions to explore
+```
+
+### 6. Report back
+
+Send via Telegram:
+```
+✅ Project <project_name> bootstrapped on <machine>!
+ 📁 /home/chois/gitsrcs/<project_name>
+ 🤖 Session created — Claude is reading the codebase and writing CLAUDE.md
+```
+
+### Monitor
+
+Add this as an active task and check progress on subsequent heartbeats. Report when CLAUDE.md setup is complete.
 
 ## Important
 

@@ -109,6 +109,26 @@ async def stop_session(
     return {"ok": True, "command_id": cmd_id}
 
 
+@router.get("/debug/ws-state")
+async def ws_debug_state(
+    _token: str = Depends(require_token),
+):
+    """Diagnostic: show which sessions have active WebSocket connections."""
+    return {
+        "terminal_agents": list(manager.terminal_agents.keys()),
+        "terminal_clients": {
+            sid: len(clients) for sid, clients in manager.terminal_clients.items() if clients
+        },
+        "terminal_buffer": {
+            sid: len(buf) for sid, buf in manager.terminal_buffer.items()
+        },
+        "relay_agents": list(manager.relay_agents.keys()),
+        "relay_clients": {
+            sid: len(clients) for sid, clients in manager.relay_clients.items() if clients
+        },
+    }
+
+
 @router.post("/{session_id}/unhide")
 async def unhide_session(
     session_id: str,
