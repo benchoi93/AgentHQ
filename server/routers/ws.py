@@ -4,10 +4,14 @@ import asyncio
 import json
 from datetime import datetime
 
+import logging
+
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from server.config import AGENTHQ_TOKEN
 from server.ws_manager import manager
+
+log = logging.getLogger("agenthq.ws")
 
 router = APIRouter(tags=["websocket"])
 
@@ -126,6 +130,7 @@ async def ws_terminal(
 
     is_agent = role == "agent"
     timeout = _WS_TIMEOUT_AGENT if is_agent else _WS_TIMEOUT_CLIENT
+    log.info("Terminal WS connect: session=%s role=%s", session_id, role)
     await manager.connect_terminal(session_id, websocket, is_agent=is_agent)
 
     try:
@@ -141,8 +146,10 @@ async def ws_terminal(
                 await manager.terminal_to_clients(session_id, data)
             else:
                 await manager.terminal_to_agent(session_id, data)
-    except (WebSocketDisconnect, asyncio.TimeoutError):
-        pass
+    except WebSocketDisconnect as exc:
+        log.info("Terminal WS disconnect: session=%s role=%s code=%s", session_id, role, exc.code)
+    except asyncio.TimeoutError:
+        log.info("Terminal WS timeout: session=%s role=%s", session_id, role)
     finally:
         manager.disconnect_terminal(session_id, websocket, is_agent=is_agent)
 
