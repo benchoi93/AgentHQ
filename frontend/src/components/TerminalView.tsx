@@ -65,6 +65,22 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     terminal.open(containerRef.current);
     fitAddon.fit();
 
+    // Fix iOS mobile input: configure the hidden textarea to prevent
+    // character preview at bottom of screen and auto-zoom
+    if (IS_TOUCH) {
+      const textarea = containerRef.current.querySelector("textarea");
+      if (textarea) {
+        textarea.setAttribute("autocomplete", "off");
+        textarea.setAttribute("autocorrect", "off");
+        textarea.setAttribute("autocapitalize", "off");
+        textarea.setAttribute("spellcheck", "false");
+        textarea.setAttribute("inputmode", "text");
+        // Font size >= 16px prevents iOS zoom-on-focus
+        textarea.style.fontSize = "16px";
+        textarea.style.opacity = "0";
+      }
+    }
+
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
