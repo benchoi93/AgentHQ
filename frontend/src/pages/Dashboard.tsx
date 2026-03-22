@@ -155,6 +155,16 @@ export default function Dashboard() {
                   <span className="text-xs text-slate-600">
                     ({machineSessions.length})
                   </span>
+                  {machineSessions[0]?.agent_version && (
+                    <span className="px-1.5 py-0.5 bg-slate-800 rounded text-xs text-slate-500 font-mono">
+                      v{machineSessions[0].agent_version}
+                    </span>
+                  )}
+                  {machineSessions[0] && !machineSessions[0].agent_version && (
+                    <span className="px-1.5 py-0.5 bg-amber-900/30 border border-amber-800/50 rounded text-xs text-amber-500 font-mono">
+                      version unknown
+                    </span>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {machineSessions.map((session) => (

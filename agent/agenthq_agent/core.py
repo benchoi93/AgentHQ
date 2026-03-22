@@ -27,6 +27,7 @@ from typing import Any
 import aiohttp
 import yaml
 
+from . import __version__
 from .backends import SessionBackend, get_backend
 
 log = logging.getLogger("agenthq-agent")
@@ -349,6 +350,7 @@ async def heartbeat_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> No
             payload = {
                 "agent_name": cfg["machine_name"],
                 "machine": platform.node(),
+                "agent_version": __version__,
                 "sessions": sessions,
                 "known_projects": _known_projects_cache["projects"],
             }

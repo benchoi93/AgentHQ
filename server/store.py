@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS agents (
     name TEXT NOT NULL,
     machine TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    ip TEXT
+    ip TEXT,
+    agent_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -68,11 +69,15 @@ async def get_db() -> aiosqlite.Connection:
         _db.row_factory = aiosqlite.Row
         await _db.execute("PRAGMA journal_mode=WAL")
         await _db.executescript(_SCHEMA)
-        # Migrate: add hidden column if missing (existing DBs)
-        try:
-            await _db.execute("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
-        except Exception:
-            pass  # column already exists
+        # Migrate: add columns if missing (existing DBs)
+        for migration in [
+            "ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN agent_version TEXT",
+        ]:
+            try:
+                await _db.execute(migration)
+            except Exception:
+                pass  # column already exists
         await _db.commit()
     return _db
 
@@ -87,21 +92,23 @@ async def close_db() -> None:
 # --- Agent operations ---
 
 async def upsert_agent(
-    agent_id: str, name: str, machine: str, ip: Optional[str] = None,
+    agent_id: str, name: str, machine: str,
+    ip: Optional[str] = None, agent_version: Optional[str] = None,
 ) -> None:
     db = await get_db()
     now = datetime.utcnow().isoformat()
     await db.execute(
         """
-        INSERT INTO agents (id, name, machine, last_seen, ip)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO agents (id, name, machine, last_seen, ip, agent_version)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             machine = excluded.machine,
             last_seen = excluded.last_seen,
-            ip = excluded.ip
+            ip = excluded.ip,
+            agent_version = excluded.agent_version
         """,
-        (agent_id, name, machine, now, ip),
+        (agent_id, name, machine, now, ip, agent_version),
     )
     await db.commit()
 
@@ -154,7 +161,7 @@ async def list_sessions(
 ) -> list[dict]:
     db = await get_db()
     query = """
-        SELECT s.*, a.name AS agent_name, a.machine
+        SELECT s.*, a.name AS agent_name, a.machine, a.agent_version
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
         WHERE s.status != 'offline' AND s.hidden = 0
@@ -176,7 +183,7 @@ async def get_session(session_id: str) -> Optional[dict]:
     db = await get_db()
     cursor = await db.execute(
         """
-        SELECT s.*, a.name AS agent_name, a.machine
+        SELECT s.*, a.name AS agent_name, a.machine, a.agent_version
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
         WHERE s.id = ?

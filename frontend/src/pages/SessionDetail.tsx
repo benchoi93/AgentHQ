@@ -58,16 +58,15 @@ export default function SessionDetail() {
     return Array.from(seen.values());
   }, [sessions]);
 
-  // All sibling terminals for the current session (same path+machine, running)
-  const siblingTerminals = useMemo(() => {
-    if (!session) return id ? [id] : [];
-    return sessions
-      .filter(s => s.path === session.path && s.machine === session.machine && s.status === "running")
+  // All sibling terminals for the current session (same path+machine, running).
+  // Primary (URL) session is always first; siblings follow in API order.
+  const terminalIds = useMemo(() => {
+    if (!session || !id) return id ? [id] : [];
+    const siblings = sessions
+      .filter(s => s.path === session.path && s.machine === session.machine && s.status === "running" && s.id !== id)
       .map(s => s.id);
+    return [id, ...siblings];
   }, [session, sessions, id]);
-
-  // Use siblings if found, otherwise just the primary session
-  const terminalIds = siblingTerminals.length > 0 ? siblingTerminals : (id ? [id] : []);
 
   // Grid class based on terminal count
   const gridClass = useMemo(() => {
@@ -76,6 +75,9 @@ export default function SessionDetail() {
     if (n === 2) return "grid-cols-2 grid-rows-1";
     return "grid-cols-2 grid-rows-2"; // 3 or 4
   }, [terminalIds.length]);
+
+  // Smaller font when multiple terminals share the grid
+  const termFontSize = terminalIds.length > 1 ? 11 : 13;
 
   const handleReload = useCallback(() => {
     setReloadKey((k) => k + 1);
@@ -124,8 +126,7 @@ export default function SessionDetail() {
 
   const handleDeleteTerminal = useCallback(async (termId: string) => {
     if (actionPending) return;
-    // Don't allow deleting the primary session (the one from the URL)
-    if (termId === id) return;
+    if (termId === id) return; // Don't allow deleting the primary (original) session
     setActionPending("delete");
     try {
       await stopSession(termId);
@@ -463,7 +464,7 @@ export default function SessionDetail() {
                 <RefreshCw className="w-3 h-3" />
               </button>
             </div>
-            <div className={`flex-1 min-h-0 grid ${gridClass} gap-px bg-slate-800`}>
+            <div className={`flex-1 min-h-0 overflow-hidden grid ${gridClass} gap-px bg-slate-800`}>
               {isStopped ? (
                 <div className="bg-slate-950 h-full flex flex-col items-center justify-center text-slate-500 text-sm gap-3">
                   <Square className="w-8 h-8 text-slate-600" />
@@ -479,19 +480,19 @@ export default function SessionDetail() {
                 </div>
               ) : (
                 terminalIds.map((termId) => (
-                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0 relative">
+                  <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0 overflow-hidden relative">
                     {termId !== id && (
                       <button
                         onClick={() => handleDeleteTerminal(termId)}
                         disabled={!!actionPending}
                         title="Stop and remove terminal"
-                        className="absolute top-1 right-1 z-10 p-0.5 rounded bg-slate-800/80 text-slate-500 hover:text-red-400 hover:bg-slate-700 transition-colors disabled:opacity-30"
+                        className="absolute top-1 right-1 z-10 p-1 rounded bg-slate-800/90 text-slate-400 hover:text-red-400 hover:bg-red-900/50 transition-colors disabled:opacity-30 border border-slate-700/50"
                       >
-                        <X className="w-3 h-3" />
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     )}
                     <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm">Loading terminal...</div>}>
-                      <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} />
+                      <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} fontSize={termFontSize} />
                     </Suspense>
                   </div>
                 ))

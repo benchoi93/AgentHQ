@@ -4,6 +4,7 @@ export interface Agent {
   machine: string;
   last_seen: string;
   ip?: string;
+  agent_version?: string;
 }
 
 export interface CreateSessionRequest {
@@ -23,6 +24,7 @@ export interface Session {
   path: string;
   model?: string;
   provider?: string;
+  agent_version?: string;
 }
 
 export interface LogMessage {

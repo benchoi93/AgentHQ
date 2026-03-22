@@ -21,3 +21,6 @@ agent/agent.pid
 agent/agent.log.err
 agent/.claude/
 
+# Commander runtime files
+commander/config.yaml
+commander/session/.mcp.json

@@ -360,14 +360,14 @@ class TmuxBackend(SessionBackend):
             async with http.ws_connect(ws_url) as ws:
                 log.info("PTY waiting for resize: %s", label)
 
-                init_rows, init_cols = 24, 80
+                init_rows, init_cols = 20, 60
                 try:
                     first_msg = await asyncio.wait_for(ws.receive(), timeout=30)
                     if first_msg.type == aiohttp.WSMsgType.TEXT:
                         data = json.loads(first_msg.data)
                         if data.get("type") == "resize":
-                            init_cols = data.get("cols", 80)
-                            init_rows = data.get("rows", 24)
+                            init_cols = data.get("cols", 60)
+                            init_rows = data.get("rows", 20)
                 except (asyncio.TimeoutError, Exception):
                     pass
 

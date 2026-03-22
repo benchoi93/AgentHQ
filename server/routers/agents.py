@@ -31,6 +31,7 @@ async def heartbeat(
         name=payload.agent_name,
         machine=payload.machine,
         ip=client_ip,
+        agent_version=payload.agent_version,
     )
 
     reported_ids = []

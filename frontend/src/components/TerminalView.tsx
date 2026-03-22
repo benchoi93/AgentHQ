@@ -6,6 +6,7 @@ import { useTerminalWebSocket } from "../hooks/useTerminalWebSocket";
 
 interface TerminalViewProps {
   wsUrl: string | null;
+  fontSize?: number;
 }
 
 // Matches terminal auto-responses that xterm.js generates:
@@ -16,7 +17,7 @@ function isTerminalResponse(data: string): boolean {
   return TERMINAL_RESPONSE_RE.test(data);
 }
 
-export default function TerminalView({ wsUrl }: TerminalViewProps) {
+export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -39,7 +40,7 @@ export default function TerminalView({ wsUrl }: TerminalViewProps) {
 
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
       theme: {
         background: "#0a0e1a",
@@ -75,7 +76,7 @@ export default function TerminalView({ wsUrl }: TerminalViewProps) {
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, []);
+  }, [fontSize]);
 
   // Wire up keyboard input
   useEffect(() => {

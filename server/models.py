@@ -40,6 +40,7 @@ class KnownProject(BaseModel):
 class AgentHeartbeat(BaseModel):
     agent_name: str
     machine: str
+    agent_version: Optional[str] = None
     sessions: list[SessionPayload] = []
     known_projects: list[KnownProject] = []
 
@@ -52,6 +53,7 @@ class AgentInfo(BaseModel):
     machine: str
     last_seen: str
     ip: Optional[str] = None
+    agent_version: Optional[str] = None
 
 
 class SessionInfo(BaseModel):
@@ -63,6 +65,7 @@ class SessionInfo(BaseModel):
     pid: Optional[int] = None
     path: str = ""
     last_activity: str = ""
+    agent_version: Optional[str] = None
 
 
 class SessionDetail(SessionInfo):
