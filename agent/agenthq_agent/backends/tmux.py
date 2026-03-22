@@ -71,6 +71,29 @@ class TmuxBackend(SessionBackend):
         ]:
             subprocess.run(cmd, capture_output=True, timeout=5)
 
+    @staticmethod
+    def _auto_accept_trust(tmux_name: str) -> None:
+        """Send Enter to auto-accept Claude Code's 'Trust this folder?' dialog.
+
+        Claude Code shows a trust prompt on first launch in a new directory.
+        --dangerously-skip-permissions doesn't skip this dialog, so we send
+        Enter after a brief delay to accept it automatically.
+        """
+        import threading
+
+        def _send_enter():
+            time.sleep(3)  # Wait for Claude Code to show the trust dialog
+            try:
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", tmux_name, "", "Enter"],
+                    capture_output=True, timeout=5,
+                )
+                log.info("Auto-accepted trust dialog for '%s'", tmux_name)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+
+        threading.Thread(target=_send_enter, daemon=True).start()
+
     # -----------------------------------------------------------------------
     # Session lifecycle
     # -----------------------------------------------------------------------
@@ -129,6 +152,7 @@ class TmuxBackend(SessionBackend):
                 capture_output=True, text=True, timeout=10, check=True,
             )
             self._apply_tmux_defaults(tmux_name)
+            self._auto_accept_trust(tmux_name)
             self.sessions[sid] = {
                 "project": project,
                 "path": directory,
@@ -173,6 +197,7 @@ class TmuxBackend(SessionBackend):
                 capture_output=True, text=True, timeout=10, check=True,
             )
             self._apply_tmux_defaults(tmux_name)
+            self._auto_accept_trust(tmux_name)
             self.sessions[session_id] = {
                 "project": project,
                 "path": directory,
