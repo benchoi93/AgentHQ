@@ -157,23 +157,19 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     }
   }, [connected, sendResize]);
 
-  // Mobile input bar: send text (pasted or typed) to terminal + Enter
-  const handleMobileSend = useCallback(() => {
-    if (!mobileInput) return;
-    // Send text followed by Enter (\r) so the command executes immediately
-    sendInput(mobileInput + "\r");
-    setMobileInput("");
-    setSendFlash(true);
-    setTimeout(() => setSendFlash(false), 400);
-    // Re-focus input for rapid successive sends
-    setTimeout(() => mobileInputRef.current?.focus(), 50);
-  }, [mobileInput, sendInput]);
-
-  // Handle form submit (works better than onKeyDown on iOS)
+  // Handle form submit — read value directly from DOM to avoid iOS IME race
   const handleMobileSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
-    handleMobileSend();
-  }, [handleMobileSend]);
+    // Read directly from the input element (iOS may not have flushed onChange yet)
+    const text = mobileInputRef.current?.value || mobileInput;
+    if (!text) return;
+    sendInput(text + "\r");
+    setMobileInput("");
+    if (mobileInputRef.current) mobileInputRef.current.value = "";
+    setSendFlash(true);
+    setTimeout(() => setSendFlash(false), 400);
+    setTimeout(() => mobileInputRef.current?.focus(), 50);
+  }, [mobileInput, sendInput]);
 
   return (
     <div className="h-full relative flex flex-col">
