@@ -29,6 +29,52 @@ logging.basicConfig(
 log = logging.getLogger("bridge")
 
 
+# ---------------------------------------------------------------------------
+# Telegram /command → plain text prompt routing
+# ---------------------------------------------------------------------------
+
+# Maps Telegram /commands to prompt templates.
+# {args} is replaced with everything after the command name.
+_COMMAND_ROUTES: dict[str, str] = {
+    "help":    "[command] Show the user the full list of available commands via send_telegram",
+    "status":  "[command] List all sessions grouped by machine with status. Send via send_telegram.",
+    "check":   "[command] Get recent output from session matching: {args}. Summarize and send via send_telegram.",
+    "tell":    "[command] Send to session: {args}. First word is project, rest is the message.",
+    "git":     "[command] Check git status and recent commits for: {args}. Report via send_telegram.",
+    "train":   "[command] Check training progress (loss, epoch, metrics) for: {args}. Report via send_telegram.",
+    "test":    "[command] Run tests in project: {args}. Monitor and report results via send_telegram.",
+    "build":   "[command] Run build/compile in project: {args}. Monitor and report via send_telegram.",
+    "logs":    "[command] Get last N lines of output from: {args}. Send raw output via send_telegram.",
+    "diff":    "[command] Show uncommitted changes for: {args}. Report via send_telegram.",
+    "compact": "[command] Compact the context for session: {args}. Confirm via send_telegram.",
+    "new":     "[command] Create a new Claude Code session: {args}. Format: machine directory [name]. Confirm via send_telegram.",
+    "machines":"[command] List all machines with their session counts. Send via send_telegram.",
+    "explore": "[command] Explore this idea and set it up as a new project: {args}",
+}
+
+
+def _route_telegram_message(text: str) -> str:
+    """Convert Telegram /commands to plain text prompts for Claude Code."""
+    text = text.strip()
+    if not text.startswith("/"):
+        return text
+
+    # Parse: /command args...
+    parts = text[1:].split(None, 1)
+    cmd = parts[0].lower() if parts else ""
+    args = parts[1] if len(parts) > 1 else ""
+
+    # Special case: bare "/" = help
+    if not cmd:
+        return _COMMAND_ROUTES["help"]
+
+    if cmd in _COMMAND_ROUTES:
+        return _COMMAND_ROUTES[cmd].replace("{args}", args)
+
+    # Unknown command — pass as plain text with guidance
+    return f"[command] Unknown command '/{cmd}'. Tell the user via send_telegram: Unknown command. Send /help for available commands."
+
+
 def _load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
@@ -176,8 +222,9 @@ async def main(config_path: str) -> None:
         text = msg.text or msg.caption or ""
         if not text.strip():
             return
-        await queue.enqueue(text)
-        log.info("Telegram → queue: %s", text[:120])
+        routed = _route_telegram_message(text)
+        await queue.enqueue(routed)
+        log.info("Telegram → queue: %s", routed[:120])
 
     log.info("Bridge starting — commander=%s, heartbeat=%ds",
              cfg["commander_session_id"], cfg["heartbeat_interval"])
