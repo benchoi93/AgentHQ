@@ -35,7 +35,8 @@ export default function SessionDetail() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Default sidebar closed on mobile (< 768px)
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [actionPending, setActionPending] = useState<string | null>(null);
@@ -68,12 +69,12 @@ export default function SessionDetail() {
     return [id, ...siblings];
   }, [session, sessions, id]);
 
-  // Grid class based on terminal count
+  // Grid class based on terminal count (single column on mobile)
   const gridClass = useMemo(() => {
     const n = terminalIds.length;
     if (n <= 1) return "grid-cols-1 grid-rows-1";
-    if (n === 2) return "grid-cols-2 grid-rows-1";
-    return "grid-cols-2 grid-rows-2"; // 3 or 4
+    if (n === 2) return "grid-cols-1 sm:grid-cols-2 grid-rows-1";
+    return "grid-cols-1 sm:grid-cols-2 sm:grid-rows-2"; // 3 or 4
   }, [terminalIds.length]);
 
   // Smaller font when multiple terminals share the grid
@@ -275,7 +276,7 @@ export default function SessionDetail() {
                       className="flex items-center gap-1 px-2 py-1 rounded text-green-400 hover:text-green-300 hover:bg-green-900/30 transition-colors disabled:opacity-50"
                     >
                       <Play className={`w-3 h-3 ${actionPending === "start" ? "animate-pulse" : ""}`} />
-                      <span className="text-[11px]">{actionPending === "start" ? "Starting..." : "Start"}</span>
+                      <span className="text-[11px] hidden sm:inline">{actionPending === "start" ? "Starting..." : "Start"}</span>
                     </button>
                   ) : isRunning ? (
                     <>
@@ -286,7 +287,7 @@ export default function SessionDetail() {
                         className="flex items-center gap-1 px-2 py-1 rounded text-orange-400 hover:text-orange-300 hover:bg-orange-900/30 transition-colors disabled:opacity-50"
                       >
                         <RotateCcw className={`w-3 h-3 ${actionPending === "restart" ? "animate-spin" : ""}`} />
-                        <span className="text-[11px]">{actionPending === "restart" ? "Restarting..." : "Restart"}</span>
+                        <span className="text-[11px] hidden sm:inline">{actionPending === "restart" ? "Restarting..." : "Restart"}</span>
                       </button>
                       <button
                         onClick={() => handleAction("stop")}
@@ -295,7 +296,7 @@ export default function SessionDetail() {
                         className="flex items-center gap-1 px-2 py-1 rounded text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors disabled:opacity-50"
                       >
                         <Square className={`w-3 h-3 ${actionPending === "stop" ? "animate-pulse" : ""}`} />
-                        <span className="text-[11px]">{actionPending === "stop" ? "Stopping..." : "Stop"}</span>
+                        <span className="text-[11px] hidden sm:inline">{actionPending === "stop" ? "Stopping..." : "Stop"}</span>
                       </button>
                     </>
                   ) : null}
@@ -314,8 +315,14 @@ export default function SessionDetail() {
 
         {sidebarOpen && (
           <>
+            {/* Backdrop on mobile to close sidebar */}
+            <div
+              className="fixed inset-0 bg-black/40 z-20 md:hidden"
+              onClick={() => setSidebarOpen(false)}
+            />
             {/* === COL 1: Session list (deduplicated by path+machine) === */}
-            <div className="w-48 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/30">
+            <div className="w-48 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/30
+                            fixed md:relative inset-y-0 left-0 z-30 md:z-auto bg-slate-950 md:bg-slate-900/30 pt-11 md:pt-0">
               <div className="px-3 py-1.5 border-b border-slate-800 flex-shrink-0">
                 <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">
                   Sessions
@@ -354,6 +361,8 @@ export default function SessionDetail() {
                               } else {
                                 navigate(`/session/${s.id}`);
                               }
+                              // Auto-close sidebar on mobile
+                              if (window.innerWidth < 768) setSidebarOpen(false);
                             }}
                             className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors border-l-2
                                        ${isActive
@@ -378,8 +387,8 @@ export default function SessionDetail() {
               </div>
             </div>
 
-            {/* === COL 2: File tree === */}
-            <div className="w-52 flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/20">
+            {/* === COL 2: File tree (hidden on mobile) === */}
+            <div className="w-52 flex-shrink-0 hidden md:flex flex-col border-r border-slate-800 bg-slate-900/20">
               <div className="px-3 py-1.5 border-b border-slate-800 flex items-center gap-1.5 flex-shrink-0">
                 <FolderOpen className="w-3 h-3 text-slate-500" />
                 <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">
@@ -414,9 +423,9 @@ export default function SessionDetail() {
         {/* === MAIN: split top/bottom — file viewer + terminal grid === */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
 
-          {/* File viewer (top half, only when file is open) */}
+          {/* File viewer (top half, only when file is open — hidden on mobile) */}
           {selectedFile && (
-            <div className="flex-1 flex flex-col min-h-0 border-b border-slate-800">
+            <div className="flex-1 hidden md:flex flex-col min-h-0 border-b border-slate-800">
               <div className="flex items-center px-3 py-1 border-b border-slate-800 bg-slate-900/40 flex-shrink-0">
                 <span className="text-[11px] text-slate-400 font-mono truncate flex-1">
                   {selectedFile}
@@ -441,7 +450,7 @@ export default function SessionDetail() {
 
           {/* Terminal grid */}
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex items-center border-b border-slate-800 flex-shrink-0 px-2">
+            <div className="hidden sm:flex items-center border-b border-slate-800 flex-shrink-0 px-2">
               <span className="text-[11px] font-medium text-slate-400 px-1 py-1.5">
                 Terminals
                 {terminalIds.length > 1 && (
