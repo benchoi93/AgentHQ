@@ -358,18 +358,10 @@ class TmuxBackend(SessionBackend):
 
         try:
             async with http.ws_connect(ws_url, heartbeat=20) as ws:
-                log.info("PTY waiting for resize: %s", label)
-
-                init_rows, init_cols = 20, 60
-                try:
-                    first_msg = await asyncio.wait_for(ws.receive(), timeout=30)
-                    if first_msg.type == aiohttp.WSMsgType.TEXT:
-                        data = json.loads(first_msg.data)
-                        if data.get("type") == "resize":
-                            init_cols = data.get("cols", 60)
-                            init_rows = data.get("rows", 20)
-                except (asyncio.TimeoutError, Exception):
-                    pass
+                # Start PTY immediately with defaults — don't wait for resize.
+                # Clients can send resize after connecting; the ws_reader handles it.
+                init_rows, init_cols = 24, 80
+                log.info("PTY connecting: %s", label)
 
                 master_fd, slave_fd = pty.openpty()
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
