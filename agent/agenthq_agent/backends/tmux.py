@@ -68,12 +68,46 @@ class TmuxBackend(SessionBackend):
             ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
             ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "off"],
             ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
+            # Keep the pane alive if Claude exits, so terminal output is preserved
+            # and the agent can still attach for output reading.
+            ["tmux", "set-option", "-t", tmux_name, "remain-on-exit", "on"],
         ]:
             subprocess.run(cmd, capture_output=True, timeout=5)
 
     # -----------------------------------------------------------------------
     # Session lifecycle
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _claude_wrapper_cmd() -> str:
+        """Shell command that runs Claude Code with auto-restart on exit.
+
+        Uses a bash loop so the tmux session stays alive even if Claude
+        crashes or exits. After exit, waits 3s then restarts. The user
+        can kill the loop by exiting with Ctrl-C twice.
+        """
+        return (
+            'while true; do '
+            'claude --dangerously-skip-permissions; '
+            'EXIT_CODE=$?; '
+            'echo ""; '
+            'echo "Claude exited with code $EXIT_CODE. Restarting in 3s... (Ctrl-C to stop)"; '
+            'sleep 3; '
+            'done'
+        )
+
+    def _create_tmux_with_claude(
+        self, tmux_name: str, directory: str,
+    ) -> None:
+        """Create a tmux session running Claude Code with auto-restart wrapper."""
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
+             "bash", "-c", self._claude_wrapper_cmd()],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        self._apply_tmux_defaults(tmux_name)
+        log.info("Created tmux session '%s' in %s with auto-restart wrapper",
+                 tmux_name, directory)
 
     @staticmethod
     def _tmux_alive(tmux_name: str) -> bool:
@@ -123,12 +157,7 @@ class TmuxBackend(SessionBackend):
             return {"ok": True, "session_id": sid,
                     "message": f"Adopted existing tmux session '{tmux_name}'"}
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
-                 "claude", "--dangerously-skip-permissions"],
-                capture_output=True, text=True, timeout=10, check=True,
-            )
-            self._apply_tmux_defaults(tmux_name)
+            self._create_tmux_with_claude(tmux_name, directory)
             self.sessions[sid] = {
                 "project": project,
                 "path": directory,
@@ -167,12 +196,7 @@ class TmuxBackend(SessionBackend):
                 pass
 
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
-                 "claude", "--dangerously-skip-permissions"],
-                capture_output=True, text=True, timeout=10, check=True,
-            )
-            self._apply_tmux_defaults(tmux_name)
+            self._create_tmux_with_claude(tmux_name, directory)
             self.sessions[session_id] = {
                 "project": project,
                 "path": directory,
@@ -282,15 +306,13 @@ class TmuxBackend(SessionBackend):
             return pane
         path = session.get("path", "")
         if not path or not Path(path).is_dir():
+            log.debug("ensure_pane: path missing or not a dir: %r", path)
             return None
         sid = session.get("id", "")
         project = session.get("project", Path(path).name)
         tmux_name = f"agenthq-{project}".replace(" ", "-").replace("/", "-")[:50]
         try:
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_name, "-c", path],
-                capture_output=True, text=True, timeout=10, check=True,
-            )
+            self._create_tmux_with_claude(tmux_name, path)
             self.sessions[sid] = {
                 "project": project,
                 "path": path,
@@ -451,8 +473,11 @@ class TmuxBackend(SessionBackend):
         sid = session["id"]
         pane = self.ensure_pane(session)
         if not pane:
-            log.debug("No tmux pane for session %s, skipping terminal", sid)
+            log.warning("No tmux pane for session %s (%s), skipping terminal",
+                        sid, session.get("project", "?"))
             return
+        log.info("Attaching terminal to pane '%s' for session %s (%s)",
+                 pane, sid, session.get("project", "?"))
         # Set window-size=latest so tmux uses the most recently active client's
         # size instead of the smallest, then attach.
         subprocess.run(
