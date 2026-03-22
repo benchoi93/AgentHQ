@@ -498,7 +498,7 @@ async def stream_logs_for_session(
 
     while True:
         try:
-            async with http.ws_connect(ws_url) as ws:
+            async with http.ws_connect(ws_url, heartbeat=20) as ws:
                 log.info("Log WS connected for session %s", session["id"])
                 last_size = log_file.stat().st_size
                 while True:
@@ -541,7 +541,7 @@ async def relay_for_session(
 
     while True:
         try:
-            async with http.ws_connect(ws_url) as ws:
+            async with http.ws_connect(ws_url, heartbeat=20) as ws:
                 log.info("Relay WS connected for session %s", sid)
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
@@ -652,7 +652,7 @@ async def files_for_session(
 
     while True:
         try:
-            async with http.ws_connect(ws_url) as ws:
+            async with http.ws_connect(ws_url, heartbeat=20) as ws:
                 log.info("Files WS connected for session %s", session["id"])
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:

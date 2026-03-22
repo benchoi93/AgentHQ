@@ -357,7 +357,7 @@ class TmuxBackend(SessionBackend):
                     proc.wait(timeout=3)
 
         try:
-            async with http.ws_connect(ws_url) as ws:
+            async with http.ws_connect(ws_url, heartbeat=20) as ws:
                 log.info("PTY waiting for resize: %s", label)
 
                 init_rows, init_cols = 20, 60
