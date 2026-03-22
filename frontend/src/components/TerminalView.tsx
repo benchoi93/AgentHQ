@@ -54,7 +54,7 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
         selectionBackground: "#334155",
       },
       allowProposedApi: true,
-      scrollback: 10000,
+      scrollback: IS_TOUCH ? 2000 : 10000,
       scrollOnUserInput: true,
       scrollSensitivity: 3,
       fastScrollSensitivity: 10,
@@ -68,14 +68,19 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    // Handle resize
+    // Handle resize — debounced to avoid lag from iOS keyboard open/close
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const observer = new ResizeObserver(() => {
-      fitAddon.fit();
-      sendResizeRef.current(terminal.cols, terminal.rows);
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        fitAddon.fit();
+        sendResizeRef.current(terminal.cols, terminal.rows);
+      }, IS_TOUCH ? 200 : 50);
     });
     observer.observe(containerRef.current);
 
     return () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
       observer.disconnect();
       terminal.dispose();
       terminalRef.current = null;

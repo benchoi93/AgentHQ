@@ -25,13 +25,25 @@ body {
     "Segoe UI",
     Roboto,
     sans-serif;
+  /* Prevent iOS Safari page bounce when scrolling inside terminal */
+  overscroll-behavior: none;
 }
 
-/* Scrollbar styling for log viewer */
 /* Make xterm.js fill its container so FitAddon calculates correct dimensions */
 .xterm {
   height: 100% !important;
   width: 100% !important;
+}
+
+/* Fix touch scrolling in xterm.js on iOS Safari */
+.xterm-viewport {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Prevent iOS page bounce when scrolling inside terminal */
+.xterm-screen {
+  touch-action: pan-y;
 }
 
 /* Scrollbar styling for log viewer */
