@@ -68,8 +68,40 @@ class TmuxBackend(SessionBackend):
             ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
             ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "off"],
             ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
+            # Keep pane alive when Claude exits — prevents session death cycle.
+            # Dead panes are respawned by _respawn_if_dead() on next heartbeat.
+            ["tmux", "set-option", "-t", tmux_name, "remain-on-exit", "on"],
         ]:
             subprocess.run(cmd, capture_output=True, timeout=5)
+
+    @staticmethod
+    def _respawn_if_dead(tmux_name: str) -> bool:
+        """Check if a tmux pane is dead and respawn it if so.
+
+        With remain-on-exit, dead panes show 'Pane is dead' but the session
+        stays alive. This respawns Claude Code in the same pane.
+        Returns True if pane was respawned.
+        """
+        try:
+            result = subprocess.run(
+                ["tmux", "list-panes", "-t", tmux_name, "-F", "#{pane_dead}"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return False
+            is_dead = result.stdout.strip() == "1"
+            if is_dead:
+                subprocess.run(
+                    ["tmux", "respawn-pane", "-k", "-t", tmux_name,
+                     "claude", "--dangerously-skip-permissions"],
+                    capture_output=True, timeout=5,
+                )
+                log.info("Respawned dead pane in '%s'", tmux_name)
+                TmuxBackend._auto_accept_trust(tmux_name)
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return False
 
     @staticmethod
     def _auto_accept_trust(tmux_name: str) -> None:
@@ -470,6 +502,8 @@ class TmuxBackend(SessionBackend):
         if not pane:
             log.debug("No tmux pane for session %s, skipping terminal", sid)
             return
+        # Respawn Claude if the pane is dead (remain-on-exit keeps pane alive)
+        self._respawn_if_dead(pane)
         # Set window-size=latest so tmux uses the most recently active client's
         # size instead of the smallest, then attach.
         subprocess.run(
