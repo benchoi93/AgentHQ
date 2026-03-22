@@ -1,10 +1,9 @@
 """Telegram ↔ AgentHQ bridge for the 대장 commander session.
 
-Features:
-  1. Receives Telegram messages and queues them.
-  2. Waits a minimum interval between sends (lets Claude finish processing).
-  3. Coalesces rapid messages sent within a short window.
-  4. Sends periodic heartbeat pings (only when idle).
+Simple design:
+  1. Receives Telegram messages → coalesces rapid messages (3s window) → sends to relay.
+  2. tmux naturally buffers input while Claude is busy — no need for prompt detection.
+  3. Periodic heartbeat pings (skipped if a message was sent recently).
 
 Usage:
     python3 commander/bridge.py                    # default config.yaml
@@ -30,27 +29,15 @@ logging.basicConfig(
 log = logging.getLogger("bridge")
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-
 def _load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
-    required = [
-        "telegram_bot_token",
-        "telegram_user_id",
-        "agenthq_url",
-        "agenthq_token",
-        "commander_session_id",
-    ]
-    for key in required:
+    for key in ["telegram_bot_token", "telegram_user_id", "agenthq_url",
+                "agenthq_token", "commander_session_id"]:
         if not cfg.get(key):
             raise ValueError(f"Missing required config key: {key}")
     cfg.setdefault("heartbeat_interval", 120)
     cfg.setdefault("coalesce_window", 3)
-    cfg.setdefault("min_send_interval", 30)  # min seconds between sends
     return cfg
 
 
@@ -60,8 +47,6 @@ def _load_config(path: str) -> dict:
 
 
 class RelayConnection:
-    """Persistent WebSocket connection to the commander session's relay endpoint."""
-
     def __init__(self, cfg: dict) -> None:
         base = cfg["agenthq_url"].rstrip("/").replace("http", "ws", 1)
         sid = cfg["commander_session_id"]
@@ -71,6 +56,7 @@ class RelayConnection:
         self._http: aiohttp.ClientSession | None = None
         self._ready = asyncio.Event()
         self._stop = False
+        self.last_send = 0.0
 
     async def connect_loop(self) -> None:
         self._http = aiohttp.ClientSession()
@@ -88,7 +74,6 @@ class RelayConnection:
                 log.warning("Relay connection error: %s", exc)
             self._ready.clear()
             if not self._stop:
-                log.info("Reconnecting relay in 5s…")
                 await asyncio.sleep(5)
         if self._http:
             await self._http.close()
@@ -97,6 +82,7 @@ class RelayConnection:
         await self._ready.wait()
         if self._ws and not self._ws.closed:
             await self._ws.send_json({"type": "input", "content": text})
+            self.last_send = time.time()
             log.info("→ relay: %s", text[:120])
         else:
             log.warning("Relay WS not connected, dropping message")
@@ -110,55 +96,33 @@ class RelayConnection:
 
 
 # ---------------------------------------------------------------------------
-# Message queue + dispatcher
+# Coalescing queue — batches rapid messages, sends immediately
 # ---------------------------------------------------------------------------
 
 
-class MessageQueue:
-    """Queues messages and dispatches with coalescing and min interval."""
-
-    def __init__(self, relay: RelayConnection, coalesce_window: float, min_interval: float) -> None:
+class CoalescingQueue:
+    def __init__(self, relay: RelayConnection, window: float = 3.0) -> None:
         self._relay = relay
         self._queue: asyncio.Queue[str] = asyncio.Queue()
-        self._coalesce_window = coalesce_window
-        self._min_interval = min_interval
-        self._last_send = 0.0
-
-    @property
-    def is_idle(self) -> bool:
-        return self._queue.empty() and (time.time() - self._last_send > self._min_interval)
+        self._window = window
 
     async def enqueue(self, text: str) -> None:
         await self._queue.put(text)
-        log.info("Queued: %s (queue size: %d)", text[:80], self._queue.qsize())
 
-    async def dispatch_loop(self) -> None:
+    async def run(self) -> None:
         while True:
-            # Wait for first message
             text = await self._queue.get()
-
-            # Coalesce: wait briefly for more messages
-            await asyncio.sleep(self._coalesce_window)
+            # Wait briefly for more messages to coalesce
+            await asyncio.sleep(self._window)
             parts = [text]
             while not self._queue.empty():
                 try:
                     parts.append(self._queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
-
             combined = "\n".join(parts)
             if len(parts) > 1:
                 log.info("Coalesced %d messages", len(parts))
-
-            # Wait for min interval since last send
-            elapsed = time.time() - self._last_send
-            if elapsed < self._min_interval:
-                wait = self._min_interval - elapsed
-                log.info("Waiting %.0fs before sending (min interval)…", wait)
-                await asyncio.sleep(wait)
-
-            # Send
-            self._last_send = time.time()
             await self._relay.send(combined)
 
 
@@ -167,13 +131,14 @@ class MessageQueue:
 # ---------------------------------------------------------------------------
 
 
-async def heartbeat_loop(queue: MessageQueue, interval: int) -> None:
+async def heartbeat_loop(relay: RelayConnection, queue: CoalescingQueue, interval: int) -> None:
     while True:
         await asyncio.sleep(interval)
-        if queue.is_idle:
-            await queue.enqueue("[heartbeat] check active tasks and report any updates")
-        else:
-            log.info("Skipping heartbeat — commander busy")
+        # Skip heartbeat if we sent something recently (within interval)
+        if time.time() - relay.last_send < interval:
+            log.info("Skipping heartbeat — recent activity")
+            continue
+        await queue.enqueue("[heartbeat] check active tasks and report any updates")
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +153,11 @@ async def main(config_path: str) -> None:
     relay = RelayConnection(cfg)
     relay_task = asyncio.create_task(relay.connect_loop())
 
-    queue = MessageQueue(
-        relay,
-        coalesce_window=float(cfg["coalesce_window"]),
-        min_interval=float(cfg["min_send_interval"]),
-    )
-    dispatch_task = asyncio.create_task(queue.dispatch_loop())
+    queue = CoalescingQueue(relay, window=float(cfg["coalesce_window"]))
+    queue_task = asyncio.create_task(queue.run())
 
     hb_task = asyncio.create_task(
-        heartbeat_loop(queue, int(cfg["heartbeat_interval"]))
+        heartbeat_loop(relay, queue, int(cfg["heartbeat_interval"]))
     )
 
     bot = Bot(token=cfg["telegram_bot_token"])
@@ -218,19 +179,14 @@ async def main(config_path: str) -> None:
         await queue.enqueue(text)
         log.info("Telegram → queue: %s", text[:120])
 
-    log.info(
-        "Bridge starting — commander=%s, heartbeat=%ds, coalesce=%ds, min_interval=%ds",
-        cfg["commander_session_id"],
-        cfg["heartbeat_interval"],
-        cfg["coalesce_window"],
-        cfg["min_send_interval"],
-    )
+    log.info("Bridge starting — commander=%s, heartbeat=%ds",
+             cfg["commander_session_id"], cfg["heartbeat_interval"])
 
     try:
         await dp.start_polling(bot)
     finally:
         hb_task.cancel()
-        dispatch_task.cancel()
+        queue_task.cancel()
         relay_task.cancel()
         await relay.close()
 
@@ -240,7 +196,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         default=str(Path(__file__).parent / "config.yaml"),
-        help="Path to config.yaml (default: commander/config.yaml)",
     )
     args = parser.parse_args()
     asyncio.run(main(args.config))
