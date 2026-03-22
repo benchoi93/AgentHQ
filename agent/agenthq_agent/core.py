@@ -423,6 +423,29 @@ async def _handle_command(cfg: dict[str, Any], http: aiohttp.ClientSession, cmd:
         )
         status = "completed" if result.get("ok") else "failed"
         await _report_command(cfg, http, cmd_id, status, json.dumps(result))
+    elif cmd_type == "run_shell":
+        shell_cmd = payload.get("command", "")
+        cwd = payload.get("cwd")
+        timeout = payload.get("timeout", 30)
+        log.info("run_shell: %r (cwd=%r, timeout=%d)", shell_cmd, cwd, timeout)
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                shell_cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=cwd,
+            )
+            result = {
+                "ok": proc.returncode == 0,
+                "stdout": proc.stdout[-4000:] if proc.stdout else "",
+                "stderr": proc.stderr[-2000:] if proc.stderr else "",
+                "returncode": proc.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            result = {"ok": False, "error": "Command timed out"}
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+        status = "completed" if result.get("ok") else "failed"
+        await _report_command(cfg, http, cmd_id, status, json.dumps(result))
     else:
         await _report_command(cfg, http, cmd_id, "failed", f"Unknown command: {cmd_type}")
 

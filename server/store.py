@@ -279,6 +279,13 @@ async def update_command(command_id: int, status: str, result: Optional[str] = N
     await db.commit()
 
 
+async def get_command(command_id: int) -> Optional[dict]:
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM commands WHERE id = ?", (command_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def unhide_session(session_id: str) -> bool:
     """Restore a hidden session."""
     db = await get_db()

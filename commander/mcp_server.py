@@ -255,6 +255,65 @@ async def list_machines() -> str:
 
 
 @mcp.tool()
+async def run_shell(machine: str, command: str, cwd: str = None, timeout: int = 30) -> str:
+    """Run a shell command on a target machine's agent.
+
+    Queues the command via the AgentHQ API. The agent picks it up on its
+    next heartbeat and runs it via subprocess. Polls for the result.
+
+    Args:
+        machine: Target machine name (e.g. "workspace-he1tbf9ytu0u-0").
+        command: Shell command to run (e.g. "git pull && ./run.sh restart").
+        cwd: Optional working directory for the command.
+        timeout: Command timeout in seconds (default 30).
+    """
+    url = f"{AGENTHQ_URL}/api/agents/run-shell"
+    payload = {"machine": machine, "command": command, "timeout": timeout}
+    if cwd:
+        payload["cwd"] = cwd
+
+    try:
+        async with aiohttp.ClientSession() as http:
+            # Queue the command
+            async with http.post(
+                url, json=payload, headers=_auth_headers()
+            ) as resp:
+                body = await resp.json()
+                if resp.status != 200 or not body.get("ok"):
+                    return f"Error: {body}"
+                cmd_id = body["command_id"]
+
+            # Poll for result (up to timeout + 20s)
+            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+            for _ in range(timeout + 20):
+                await asyncio.sleep(1)
+                async with http.get(
+                    poll_url, headers=_auth_headers()
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    cmd = await resp.json()
+                    if cmd.get("status") in ("completed", "failed"):
+                        result = cmd.get("result", "")
+                        try:
+                            r = json.loads(result)
+                            parts = []
+                            if r.get("stdout"):
+                                parts.append(r["stdout"])
+                            if r.get("stderr"):
+                                parts.append(f"STDERR: {r['stderr']}")
+                            if r.get("error"):
+                                parts.append(f"ERROR: {r['error']}")
+                            return "\n".join(parts) if parts else f"Exit code: {r.get('returncode', '?')}"
+                        except (json.JSONDecodeError, TypeError):
+                            return result
+
+            return f"Command {cmd_id} timed out waiting for result"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
 async def send_telegram(message: str) -> str:
     """Send a plain-text message to the user on Telegram.
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from server.auth import require_token
 from server.models import AgentHeartbeat, AgentInfo
@@ -95,3 +97,43 @@ async def command_result(
 async def list_agents(_token: str = Depends(require_token)):
     rows = await store.list_agents()
     return [AgentInfo(**row) for row in rows]
+
+
+class RunShellRequest(BaseModel):
+    machine: str
+    command: str
+    cwd: str | None = None
+    timeout: int = 30
+
+
+@router.post("/run-shell")
+async def run_shell(
+    req: RunShellRequest,
+    _token: str = Depends(require_token),
+):
+    """Queue a shell command on a target machine's agent."""
+    agent = await store.get_agent_by_machine(req.machine)
+    if not agent:
+        raise HTTPException(status_code=404, detail="No agent found for that machine")
+    cmd_id = await store.create_command(
+        agent["id"],
+        "run_shell",
+        json.dumps({
+            "command": req.command,
+            "cwd": req.cwd,
+            "timeout": req.timeout,
+        }),
+    )
+    return {"ok": True, "command_id": cmd_id}
+
+
+@router.get("/commands/{command_id}")
+async def get_command(
+    command_id: int,
+    _token: str = Depends(require_token),
+):
+    """Get a command's status and result."""
+    cmd = await store.get_command(command_id)
+    if not cmd:
+        raise HTTPException(status_code=404, detail="Command not found")
+    return dict(cmd)
