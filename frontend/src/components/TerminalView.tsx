@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Clipboard, Keyboard } from "lucide-react";
+import { Send, ChevronUp, ChevronDown } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useTerminalWebSocket } from "../hooks/useTerminalWebSocket";
 
@@ -26,7 +26,9 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sendResizeRef = useRef<(cols: number, rows: number) => void>(() => {});
-  const [pasteFlash, setPasteFlash] = useState(false);
+  const [mobileInput, setMobileInput] = useState("");
+  const [inputBarOpen, setInputBarOpen] = useState(false);
+  const mobileInputRef = useRef<HTMLInputElement>(null);
 
   const onData = useCallback((data: Uint8Array) => {
     terminalRef.current?.write(data);
@@ -154,64 +156,79 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     }
   }, [connected, sendResize]);
 
-  // Mobile paste: read clipboard and send as bracketed paste
-  const handleMobilePaste = useCallback(async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        sendInput(`\x1b[200~${text}\x1b[201~`);
-        setPasteFlash(true);
-        setTimeout(() => setPasteFlash(false), 600);
-      }
-    } catch {
-      // Clipboard API denied — try focusing xterm's textarea as fallback
-      const textarea = containerRef.current?.querySelector("textarea");
-      if (textarea) {
-        textarea.focus();
-      }
-    }
-  }, [sendInput]);
+  // Mobile input bar: send text (pasted or typed) to terminal
+  const handleMobileSend = useCallback(() => {
+    if (!mobileInput) return;
+    // Send as bracketed paste so shell handles it correctly
+    sendInput(`\x1b[200~${mobileInput}\x1b[201~`);
+    setMobileInput("");
+    // Re-focus input for rapid successive pastes
+    mobileInputRef.current?.focus();
+  }, [mobileInput, sendInput]);
 
-  // Mobile keyboard: focus xterm's hidden textarea to trigger virtual keyboard
-  const handleMobileKeyboard = useCallback(() => {
-    const textarea = containerRef.current?.querySelector("textarea");
-    if (textarea) {
-      textarea.focus();
-      textarea.click();
+  // Send on Enter key in the mobile input
+  const handleMobileKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleMobileSend();
     }
-  }, []);
+  }, [handleMobileSend]);
 
   return (
-    <div className="h-full relative">
-      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+    <div className="h-full relative flex flex-col">
+      <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden" />
       {!connected && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60">
           <p className="text-slate-500 text-sm italic">Connecting to terminal...</p>
         </div>
       )}
-      {/* Mobile toolbar — paste + keyboard buttons */}
+      {/* Mobile input bar — toggle button + text input for paste */}
       {IS_TOUCH && connected && (
-        <div className="absolute bottom-2 right-2 flex gap-1.5 z-10">
-          <button
-            onClick={handleMobileKeyboard}
-            className="p-2.5 rounded-lg bg-slate-800/90 border border-slate-700/50 text-slate-400
-                       active:bg-slate-700 active:text-slate-200 transition-colors"
-            title="Show keyboard"
-          >
-            <Keyboard className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleMobilePaste}
-            className={`p-2.5 rounded-lg border border-slate-700/50 transition-colors
-                       ${pasteFlash
-                         ? "bg-green-800/90 text-green-300"
-                         : "bg-slate-800/90 text-slate-400 active:bg-slate-700 active:text-slate-200"
-                       }`}
-            title="Paste from clipboard"
-          >
-            <Clipboard className="w-4 h-4" />
-          </button>
-        </div>
+        <>
+          {!inputBarOpen && (
+            <button
+              onClick={() => { setInputBarOpen(true); setTimeout(() => mobileInputRef.current?.focus(), 100); }}
+              className="absolute bottom-2 right-2 z-10 p-2 rounded-lg bg-slate-800/90 border border-slate-700/50
+                         text-slate-400 active:bg-slate-700 active:text-slate-200 transition-colors"
+              title="Open input bar"
+            >
+              <ChevronUp className="w-4 h-4" />
+            </button>
+          )}
+          {inputBarOpen && (
+            <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-slate-900 border-t border-slate-700">
+              <button
+                onClick={() => setInputBarOpen(false)}
+                className="p-1.5 rounded text-slate-500 active:text-slate-300 transition-colors flex-shrink-0"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+              <input
+                ref={mobileInputRef}
+                type="text"
+                value={mobileInput}
+                onChange={(e) => setMobileInput(e.target.value)}
+                onKeyDown={handleMobileKeyDown}
+                placeholder="Type or paste here..."
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                className="flex-1 min-w-0 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm
+                           text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                style={{ fontSize: "16px" }}
+              />
+              <button
+                onClick={handleMobileSend}
+                disabled={!mobileInput}
+                className="p-2 rounded-lg bg-blue-600 text-white active:bg-blue-500 transition-colors
+                           disabled:bg-slate-700 disabled:text-slate-500 flex-shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
