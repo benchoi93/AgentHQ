@@ -63,6 +63,7 @@ def load_config(cli_args: argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("sync_interval", DEFAULT_SYNC_INTERVAL)
     cfg.setdefault("extra_sessions", [])
     cfg.setdefault("extra_project_dirs", [])
+    cfg.setdefault("default_sessions", [])
     cfg.setdefault("sync_enabled", True)
     # Track config dir for state file storage
     if cli_args.config and Path(cli_args.config).exists():
@@ -1022,6 +1023,21 @@ async def run(cfg: dict[str, Any]) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     _backend = get_backend(state_dir)
     _backend.load_sessions()
+
+    # Auto-create default sessions if configured
+    for ds in cfg.get("default_sessions", []):
+        ds_path = os.path.expanduser(ds["path"])
+        ds_name = ds.get("name", Path(ds_path).name)
+        # Check if a session for this path already exists
+        already_exists = any(
+            info.get("path") == ds_path for info in _backend.sessions.values()
+        )
+        if not already_exists and Path(ds_path).is_dir():
+            result = _backend.create_session(ds_path, ds_name)
+            if result.get("ok"):
+                log.info("Auto-created default session '%s' at %s", ds_name, ds_path)
+            else:
+                log.warning("Failed to auto-create default session '%s': %s", ds_name, result.get("error"))
 
     log.info(
         "AgentHQ agent starting: server=%s machine=%s%s (backend=%s)",

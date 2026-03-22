@@ -38,12 +38,26 @@ export default function Dashboard() {
 
   const machines = Array.from(new Set(sessions.map((s) => s.machine))).sort();
 
+  // Pin order: dot-claude first, AgentHQ second, then by last_activity DESC
+  const PIN_ORDER: Record<string, number> = { "dot-claude": 0, "AgentHQ": 1 };
+
   const grouped = sessions.reduce<Record<string, Session[]>>((acc, s) => {
     const key = s.machine || "Unknown";
     if (!acc[key]) acc[key] = [];
     acc[key].push(s);
     return acc;
   }, {});
+
+  // Sort sessions within each machine group by pin order
+  for (const machineSessions of Object.values(grouped)) {
+    machineSessions.sort((a, b) => {
+      const pinA = PIN_ORDER[a.project] ?? Infinity;
+      const pinB = PIN_ORDER[b.project] ?? Infinity;
+      if (pinA !== pinB) return pinA - pinB;
+      // Within same pin level, sort by last_activity DESC
+      return (b.last_activity || "").localeCompare(a.last_activity || "");
+    });
+  }
 
   function handleLogout() {
     localStorage.removeItem("agenthq_token");
