@@ -1,0 +1,12 @@
+# Commander Bridge Configuration
+# Copy to config.yaml and fill in real values.
+
+telegram_bot_token: "123456:ABC-DEF..."  # from @BotFather
+telegram_user_id: 123456789              # your Telegram numeric user ID
+
+agenthq_url: "http://localhost:8420"     # AgentHQ server URL
+agenthq_token: "your-agenthq-token"      # same as AGENTHQ_TOKEN on the server
+
+commander_session_id: "session-id-here"  # 대장 Claude Code session ID (from AgentHQ UI)
+
+heartbeat_interval: 60                   # seconds between heartbeat pings
