@@ -385,6 +385,7 @@ class TmuxBackend(SessionBackend):
     async def _pty_terminal(
         self, ws_url: str, cmd: list[str], label: str,
         http: aiohttp.ClientSession, cwd: str | None = None,
+        tmux_pane: str | None = None,
     ) -> None:
         """Generic PTY-backed interactive terminal over WebSocket.
 
@@ -490,6 +491,17 @@ class TmuxBackend(SessionBackend):
                                         master_fd, termios.TIOCSWINSZ,
                                         struct.pack("HHHH", rows, cols, 0, 0),
                                     )
+                                    # Also resize via tmux directly — the PTY
+                                    # ioctl only affects the current master_fd,
+                                    # but tmux's client may be on a stale PTY
+                                    # from a previous connection cycle.
+                                    if tmux_pane:
+                                        subprocess.run(
+                                            ["tmux", "resize-window", "-t",
+                                             tmux_pane, "-x", str(cols),
+                                             "-y", str(rows)],
+                                            capture_output=True, timeout=3,
+                                        )
                                     cur_rows, cur_cols = rows, cols
                                     self._last_pty_size[label] = (rows, cols)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED,
@@ -541,7 +553,7 @@ class TmuxBackend(SessionBackend):
         )
         await self._pty_terminal(
             ws_url, ["tmux", "attach-session", "-t", pane],
-            label, http,
+            label, http, tmux_pane=pane,
         )
 
     async def attach_claude_terminal(
