@@ -173,6 +173,9 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   // Send initial resize when connected — re-fit first to ensure correct dimensions
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
+      // Reset so fitAndResize() always sends on reconnect — the PTY
+      // restarts at 80x24 but cols/rows haven't changed client-side.
+      lastSizeRef.current = { cols: 0, rows: 0 };
       fitAndResize();
       // Re-fit after a short delay to catch late CSS layout changes
       const timer = setTimeout(() => {
