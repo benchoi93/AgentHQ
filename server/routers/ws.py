@@ -145,11 +145,20 @@ async def ws_terminal(
             if is_agent:
                 await manager.terminal_to_clients(session_id, data)
             else:
-                await manager.terminal_to_agent(session_id, data)
+                msg_type = data.get("type", "")
+                if msg_type == "resize":
+                    print(f"[RESIZE] client session={session_id} {data.get('cols')}x{data.get('rows')}", flush=True)
+                ok = await manager.terminal_to_agent(session_id, data)
+                if not ok and msg_type == "resize":
+                    print(f"[RESIZE] DROPPED (no agent) session={session_id}", flush=True)
     except WebSocketDisconnect as exc:
         log.info("Terminal WS disconnect: session=%s role=%s code=%s", session_id, role, exc.code)
     except asyncio.TimeoutError:
         log.info("Terminal WS timeout: session=%s role=%s", session_id, role)
+    except RuntimeError as exc:
+        # Handles "WebSocket is not connected" when _replace_agent closes
+        # the old agent's WS while its handler is still receiving.
+        log.debug("Terminal WS runtime error: session=%s role=%s: %s", session_id, role, exc)
     finally:
         manager.disconnect_terminal(session_id, websocket, is_agent=is_agent)
 

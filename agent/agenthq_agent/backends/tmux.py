@@ -32,6 +32,10 @@ log = logging.getLogger("agenthq-agent")
 class TmuxBackend(SessionBackend):
     """Unix session backend using tmux + PTY."""
 
+    # Cache last known client terminal size per label so reconnections
+    # start the PTY at the correct dimensions instead of defaulting to 80x24.
+    _last_pty_size: dict[str, tuple[int, int]] = {}  # label -> (rows, cols)
+
     # -----------------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------------
@@ -415,9 +419,11 @@ class TmuxBackend(SessionBackend):
 
         try:
             async with http.ws_connect(ws_url, heartbeat=20) as ws:
-                # Start PTY immediately with defaults — don't wait for resize.
-                # Clients can send resize after connecting; the ws_reader handles it.
-                init_rows, init_cols = 24, 80
+                # Start PTY immediately — use cached size from previous connection
+                # if available, otherwise default to 80x24.  Clients can still
+                # send resize after connecting; the ws_reader handles it.
+                init_rows, init_cols = self._last_pty_size.get(label, (24, 80))
+                cur_rows, cur_cols = init_rows, init_cols
                 log.info("PTY connecting: %s", label)
 
                 master_fd, slave_fd = pty.openpty()
@@ -463,6 +469,7 @@ class TmuxBackend(SessionBackend):
                         })
 
                 async def ws_reader() -> None:
+                    nonlocal cur_rows, cur_cols
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             try:
@@ -476,10 +483,15 @@ class TmuxBackend(SessionBackend):
                             elif msg_type == "resize":
                                 cols = data.get("cols", 80)
                                 rows = data.get("rows", 24)
-                                fcntl.ioctl(
-                                    master_fd, termios.TIOCSWINSZ,
-                                    struct.pack("HHHH", rows, cols, 0, 0),
-                                )
+                                if rows != cur_rows or cols != cur_cols:
+                                    log.info("PTY resize: %s %dx%d -> %dx%d",
+                                             label, cur_cols, cur_rows, cols, rows)
+                                    fcntl.ioctl(
+                                        master_fd, termios.TIOCSWINSZ,
+                                        struct.pack("HHHH", rows, cols, 0, 0),
+                                    )
+                                    cur_rows, cur_cols = rows, cols
+                                    self._last_pty_size[label] = (rows, cols)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED,
                                           aiohttp.WSMsgType.ERROR):
                             break

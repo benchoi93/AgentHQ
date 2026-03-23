@@ -487,10 +487,15 @@ def _find_log_file(session_path: str) -> Path | None:
 async def stream_logs_for_session(
     cfg: dict[str, Any], session: dict[str, Any], http: aiohttp.ClientSession,
 ) -> None:
+    poll_interval = cfg.get("log_poll_interval", DEFAULT_LOG_POLL_INTERVAL)
+    # Wait for log file to appear instead of returning immediately,
+    # because an early return marks the task as done() and the session
+    # manager would restart ALL tasks (including the terminal).
     log_file = _find_log_file(session["path"])
-    if not log_file:
-        log.debug("No log file for session %s", session["id"])
-        return
+    while not log_file:
+        await asyncio.sleep(poll_interval * 5)
+        log_file = _find_log_file(session["path"])
+    log.debug("Found log file for session %s: %s", session["id"], log_file)
 
     ws_url = cfg["server_url"].rstrip("/").replace("http", "ws", 1)
     ws_url += f"/ws/logs/{session['id']}?token={cfg['token']}&role=agent"
@@ -979,7 +984,7 @@ async def git_sync_loop(cfg: dict[str, Any], _http: aiohttp.ClientSession) -> No
 # ---------------------------------------------------------------------------
 
 async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> None:
-    tasks: dict[str, list[asyncio.Task]] = {}
+    tasks: dict[str, dict[str, asyncio.Task]] = {}
     interval = cfg["heartbeat_interval"]
 
     while True:
@@ -999,37 +1004,50 @@ async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> N
             for sid in restart_ids | stop_ids:
                 action = "Restarting" if sid in restart_ids else "Stopping"
                 log.info("%s tasks for session %s", action, sid)
-                for t in tasks[sid]:
+                for t in tasks[sid].values():
                     t.cancel()
-                await asyncio.gather(*tasks[sid], return_exceptions=True)
+                await asyncio.gather(*tasks[sid].values(), return_exceptions=True)
                 del tasks[sid]
                 _backend.sessions_needing_restart.discard(sid)
                 _backend.sessions_needing_stop.discard(sid)
 
         for s in sessions:
             sid = s["id"]
-            # Restart tasks if any have died (connection drop, server restart, etc.)
-            if sid in tasks and any(t.done() for t in tasks[sid]):
-                log.info("Restarting dead tasks for session %s (%s)", sid, s["project"])
-                for t in tasks[sid]:
-                    t.cancel()
-                await asyncio.gather(*tasks[sid], return_exceptions=True)
-                del tasks[sid]
             if sid not in tasks:
                 log.info("Starting tasks for session %s (%s)", sid, s["project"])
-                tasks[sid] = [
-                    asyncio.create_task(stream_logs_for_session(cfg, s, http)),
-                    asyncio.create_task(relay_for_session(cfg, s, http)),
-                    asyncio.create_task(files_for_session(cfg, s, http)),
-                    asyncio.create_task(terminal_for_session(cfg, s, http)),
+                task_factories = [
+                    ("logs", stream_logs_for_session),
+                    ("relay", relay_for_session),
+                    ("files", files_for_session),
+                    ("terminal", terminal_for_session),
                 ]
+                tasks[sid] = {
+                    name: asyncio.create_task(fn(cfg, s, http))
+                    for name, fn in task_factories
+                }
+            else:
+                # Restart only individual dead tasks, not all of them.
+                # Previously a single dead task (e.g. log stream with no log
+                # file) would kill ALL tasks including the terminal PTY.
+                task_factories = {
+                    "logs": stream_logs_for_session,
+                    "relay": relay_for_session,
+                    "files": files_for_session,
+                    "terminal": terminal_for_session,
+                }
+                for name, t in list(tasks[sid].items()):
+                    if t.done():
+                        log.info("Restarting dead %s task for session %s (%s)",
+                                 name, sid, s["project"])
+                        fn = task_factories[name]
+                        tasks[sid][name] = asyncio.create_task(fn(cfg, s, http))
 
         gone = [sid for sid in tasks if sid not in active_ids]
         for sid in gone:
             log.info("Cleaning up tasks for session %s", sid)
-            for t in tasks[sid]:
+            for t in tasks[sid].values():
                 t.cancel()
-            await asyncio.gather(*tasks[sid], return_exceptions=True)
+            await asyncio.gather(*tasks[sid].values(), return_exceptions=True)
             del tasks[sid]
 
         await asyncio.sleep(interval)

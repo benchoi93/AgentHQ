@@ -26,6 +26,10 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sendResizeRef = useRef<(cols: number, rows: number) => void>(() => {});
+  // Track last-sent terminal dimensions (cols/rows) to suppress redundant resize messages
+  const lastSizeRef = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
+  // Track container pixel dimensions to ignore ResizeObserver events not caused by real layout changes
+  const lastContainerRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const [mobileInput, setMobileInput] = useState("");
   const [inputBarOpen, setInputBarOpen] = useState(false);
   const [sendFlash, setSendFlash] = useState(false);
@@ -41,6 +45,22 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   });
 
   sendResizeRef.current = sendResize;
+
+  // Fit terminal and send resize only if cols/rows actually changed.
+  const fitAndResize = useCallback(() => {
+    const fitAddon = fitAddonRef.current;
+    const terminal = terminalRef.current;
+    if (!fitAddon || !terminal) return;
+
+    fitAddon.fit();
+
+    const { cols, rows } = terminal;
+    const last = lastSizeRef.current;
+    if (cols !== last.cols || rows !== last.rows) {
+      lastSizeRef.current = { cols, rows };
+      sendResizeRef.current(cols, rows);
+    }
+  }, []);
 
   // Initialize xterm.js
   useEffect(() => {
@@ -87,13 +107,22 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    // Handle resize — debounced to avoid lag from iOS keyboard open/close
+    // Handle resize — debounced to avoid lag from iOS keyboard open/close.
+    // Only triggers fit() when container pixel dimensions actually changed,
+    // preventing feedback loops where fit() adjusts xterm internals which
+    // re-triggers the observer even though the container didn't resize.
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-    const observer = new ResizeObserver(() => {
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width: w, height: h } = entry.contentRect;
+      const last = lastContainerRef.current;
+      if (Math.abs(w - last.w) < 1 && Math.abs(h - last.h) < 1) return;
+      lastContainerRef.current = { w, h };
+
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        fitAddon.fit();
-        sendResizeRef.current(terminal.cols, terminal.rows);
+        fitAndResize();
       }, IS_TOUCH ? 200 : 50);
     });
     observer.observe(containerRef.current);
@@ -144,18 +173,14 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
   // Send initial resize when connected — re-fit first to ensure correct dimensions
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
-      fitAddonRef.current.fit();
-      sendResize(terminalRef.current.cols, terminalRef.current.rows);
+      fitAndResize();
       // Re-fit after a short delay to catch late CSS layout changes
       const timer = setTimeout(() => {
-        if (fitAddonRef.current && terminalRef.current) {
-          fitAddonRef.current.fit();
-          sendResize(terminalRef.current.cols, terminalRef.current.rows);
-        }
+        fitAndResize();
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [connected, sendResize]);
+  }, [connected, fitAndResize]);
 
   // Handle form submit — read value directly from DOM to avoid iOS IME race
   const handleMobileSubmit = useCallback((e: React.FormEvent) => {
