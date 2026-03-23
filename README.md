@@ -43,7 +43,7 @@ Each **agent** runs on a machine, heartbeats to the server, and manages tmux ses
 ### 1. Deploy the Server
 
 ```bash
-git clone git@github.com:UMN-Choi-Lab/AgentHQ.git && cd AgentHQ
+git clone git@github.com:benchoi93/AgentHQ.git && cd AgentHQ
 cp env.example .env
 # Edit .env: set AGENTHQ_TOKEN to a strong secret
 
