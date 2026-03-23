@@ -13,26 +13,30 @@ Running Claude Code across multiple machines (dev laptops, GPU servers, cloud VM
 - **Start/Stop/Restart** controls — spin up Claude Code on any machine with one click
 - **File browser** to view project files alongside the terminal
 - **Project suggestions** pulled from `~/.claude/projects/` history
+- **Telegram commander** — control all sessions from your phone via a Telegram bot
 
 ## Architecture
 
 ```
-  Browser (React + xterm.js)
-         │
-    REST + WebSocket
-         │
-  ┌──────┴──────┐
-  │  FastAPI     │   ← Docker (nginx + uvicorn)
-  │  + SQLite    │
-  └──────┬──────┘
+  Browser (React + xterm.js)          Telegram
+         │                               │
+    REST + WebSocket               bridge.py
+         │                               │
+  ┌──────┴───────────────────────────────┘
+  │          FastAPI + SQLite            │
+  │     Docker (nginx + uvicorn)        │
+  └──────┬──────────────────────────────┘
          │
     ┌────┼────┬────────┐
     │    │    │        │
   Agent Agent Agent  Agent
   (WSL) (GPU) (Cloud) (Dev)
+               │
+          Commander session
+        (Claude + MCP tools)
 ```
 
-Each **agent** runs on a machine, heartbeats to the server, and manages tmux sessions running Claude Code. The **server** stores state in SQLite and relays WebSocket connections between the browser and agents. The **frontend** is a React SPA with an embedded terminal (xterm.js).
+Each **agent** runs on a machine, heartbeats to the server, and manages tmux sessions running Claude Code. The **server** stores state in SQLite and relays WebSocket connections between the browser and agents. The **frontend** is a React SPA with an embedded terminal (xterm.js). The **commander** is an optional Telegram bot that lets you control all sessions from your phone.
 
 ## Quick Start
 
@@ -78,7 +82,44 @@ tmux new-session -d -s agenthq-agent 'python -m agenthq_agent --config config.ya
 
 The agent will appear in the dashboard within 10 seconds.
 
-### 3. Create a Session
+### 3. Set Up the Commander (Optional)
+
+The commander lets you control AgentHQ sessions from Telegram. It consists of two parts: a Telegram bridge daemon and an MCP server that gives a dedicated Claude Code session tools to manage other sessions.
+
+```bash
+pip install mcp aiohttp aiogram pyyaml
+cd commander
+cp config.yaml.example config.yaml
+```
+
+Edit `config.yaml`:
+
+```yaml
+telegram_bot_token: "your-bot-token"     # from @BotFather
+telegram_user_id: 123456789              # your Telegram user ID
+agenthq_url: "http://<your-server>:8420"
+agenthq_token: "your-token-here"         # must match AGENTHQ_TOKEN
+commander_session_id: ""                 # fill after creating the commander session
+heartbeat_interval: 60
+```
+
+Set up the MCP config for the commander session:
+
+```bash
+cd session
+cp .mcp.json.example .mcp.json
+# Edit .mcp.json with the same tokens and paths
+```
+
+Create a session for the commander in the dashboard (pointing to `commander/session/`), then copy its session ID into `config.yaml`. Start the bridge:
+
+```bash
+nohup python bridge.py > bridge.log 2>&1 &
+```
+
+Now send `/status` to your Telegram bot to verify it works.
+
+### 4. Create a Session
 
 Click the **+** button in the dashboard, select a machine, pick a project from the suggestions (populated from `~/.claude/projects/` history), and click **Create**. This spawns a tmux session running `claude --dangerously-skip-permissions` on the selected machine.
 
@@ -111,6 +152,13 @@ Click the **+** button in the dashboard, select a machine, pick a project from t
 - Dark theme, responsive layout
 - Bearer token authentication
 
+### Commander (Telegram Bot)
+- Control all sessions from Telegram on your phone — no browser or SSH needed
+- Slash commands: `/status`, `/check`, `/tell`, `/train`, `/test`, `/build`, `/logs`, `/diff`, `/new`, `/explore`, `/machines`
+- A dedicated Claude Code session with MCP tools that can read output from, send input to, and create sessions across all machines
+- Message coalescing (3s window) to batch rapid inputs
+- Periodic heartbeat pings to check on active tasks
+
 ## Configuration
 
 ### Server Environment Variables
@@ -132,6 +180,17 @@ Click the **+** button in the dashboard, select a machine, pick a project from t
 | `sync_enabled` | `true` | Sync `.claude/` folder to server |
 | `extra_sessions` | `[]` | Manually registered sessions |
 | `extra_project_dirs` | `[]` | Additional `.claude/projects/` dirs to scan |
+
+### Commander Configuration (`commander/config.yaml`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `telegram_bot_token` | (required) | Telegram bot token from @BotFather |
+| `telegram_user_id` | (required) | Your Telegram user ID (only this user can control the bot) |
+| `agenthq_url` | `http://localhost:8420` | AgentHQ server URL |
+| `agenthq_token` | (required) | Must match `AGENTHQ_TOKEN` |
+| `commander_session_id` | (required) | Session ID of the commander's Claude Code session |
+| `heartbeat_interval` | `60` | Seconds between heartbeat pings |
 
 ### Extra Sessions (Config-Based)
 
@@ -158,6 +217,11 @@ agent/               Lightweight Python agent
     core.py          All agent logic (discovery, heartbeat, terminals, files)
     cli.py           CLI entrypoint
 
+commander/           Telegram bot + MCP tools
+  bridge.py          Telegram ↔ AgentHQ relay daemon
+  mcp_server.py      MCP tools for the commander Claude session
+  session/           Commander session config (CLAUDE.md + .mcp.json)
+
 frontend/            React + TypeScript + Vite
   src/
     pages/           Dashboard + SessionDetail
@@ -173,6 +237,7 @@ docker-compose.yml
 - **Backend:** Python 3.10+, FastAPI, aiosqlite, uvicorn
 - **Frontend:** React 18, TypeScript, Vite, TailwindCSS v4, xterm.js
 - **Agent:** Python 3.10+, aiohttp, asyncio, tmux
+- **Commander:** Python 3.10+, aiogram (Telegram), MCP protocol
 - **Deploy:** Docker Compose, nginx reverse proxy
 
 ## How It Works
@@ -186,6 +251,8 @@ docker-compose.yml
 4. **File browsing** — The agent connects a files WebSocket per session. When the browser requests a directory listing or file content, the server forwards the request to the agent, which reads from disk and responds.
 
 5. **Session lifecycle** — Stop kills the tmux session and removes it from the agent's managed list. Start/Restart creates a new tmux session. The agent persists managed sessions to `managed_sessions.json` so they survive restarts.
+
+6. **Commander** — The Telegram bridge (`bridge.py`) receives messages, coalesces them in a 3-second window, and relays them via WebSocket to a dedicated Claude Code session. That session has MCP tools (`mcp_server.py`) that can list sessions, read terminal output, send input, create new sessions, and send replies back to Telegram. The user only sees Telegram messages — all Claude responses go through `send_telegram()`.
 
 ## License
 
