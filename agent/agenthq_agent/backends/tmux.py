@@ -385,7 +385,6 @@ class TmuxBackend(SessionBackend):
     async def _pty_terminal(
         self, ws_url: str, cmd: list[str], label: str,
         http: aiohttp.ClientSession, cwd: str | None = None,
-        tmux_pane: str | None = None,
     ) -> None:
         """Generic PTY-backed interactive terminal over WebSocket.
 
@@ -432,7 +431,14 @@ class TmuxBackend(SessionBackend):
                             struct.pack("HHHH", init_rows, init_cols, 0, 0))
                 proc = subprocess.Popen(
                     cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                    close_fds=True, preexec_fn=os.setsid, cwd=cwd,
+                    close_fds=True, start_new_session=True,
+                    # After setsid, set fd 0 (the PTY slave) as the
+                    # controlling terminal so SIGWINCH is delivered on
+                    # resize — without this, ioctl(TIOCSWINSZ) on the
+                    # master has no foreground pgrp to signal.
+                    preexec_fn=lambda: fcntl.ioctl(
+                        0, termios.TIOCSCTTY, 0),
+                    cwd=cwd,
                 )
                 os.close(slave_fd)
                 log.info("PTY started: %s (%dx%d)", label, init_cols, init_rows)
@@ -491,17 +497,6 @@ class TmuxBackend(SessionBackend):
                                         master_fd, termios.TIOCSWINSZ,
                                         struct.pack("HHHH", rows, cols, 0, 0),
                                     )
-                                    # Also resize via tmux directly — the PTY
-                                    # ioctl only affects the current master_fd,
-                                    # but tmux's client may be on a stale PTY
-                                    # from a previous connection cycle.
-                                    if tmux_pane:
-                                        subprocess.run(
-                                            ["tmux", "resize-window", "-t",
-                                             tmux_pane, "-x", str(cols),
-                                             "-y", str(rows)],
-                                            capture_output=True, timeout=3,
-                                        )
                                     cur_rows, cur_cols = rows, cols
                                     self._last_pty_size[label] = (rows, cols)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED,
@@ -528,6 +523,23 @@ class TmuxBackend(SessionBackend):
             return
         # Respawn Claude if the pane is dead (remain-on-exit keeps pane alive)
         self._respawn_if_dead(pane)
+        # Detach stale tmux clients left over from previous agent connections.
+        # Without this, old clients stuck at 80x24 constrain the window size
+        # even with window-size=latest, because tmux still tracks them.
+        try:
+            result = subprocess.run(
+                ["tmux", "list-clients", "-t", pane,
+                 "-F", "#{client_name}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for client_name in result.stdout.strip().splitlines():
+                if client_name:
+                    subprocess.run(
+                        ["tmux", "detach-client", "-t", client_name],
+                        capture_output=True, timeout=5,
+                    )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
         # Set window-size=latest so tmux uses the most recently active client's
         # size instead of the smallest, then attach.
         subprocess.run(
@@ -553,7 +565,7 @@ class TmuxBackend(SessionBackend):
         )
         await self._pty_terminal(
             ws_url, ["tmux", "attach-session", "-t", pane],
-            label, http, tmux_pane=pane,
+            label, http,
         )
 
     async def attach_claude_terminal(

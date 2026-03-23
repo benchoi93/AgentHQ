@@ -156,11 +156,15 @@ class ConnectionManager:
     async def terminal_to_agent(self, session_id: str, data: dict[str, Any]) -> bool:
         agent_ws = self.terminal_agents.get(session_id)
         if agent_ws is None:
+            if data.get("type") == "resize":
+                print(f"[RESIZE] no agent WS registered for {session_id}", flush=True)
             return False
         try:
             await agent_ws.send_json(data)
             return True
-        except Exception:
+        except Exception as exc:
+            if data.get("type") == "resize":
+                print(f"[RESIZE] send to agent FAILED for {session_id}: {exc}", flush=True)
             if self.terminal_agents.get(session_id) is agent_ws:
                 del self.terminal_agents[session_id]
             return False
