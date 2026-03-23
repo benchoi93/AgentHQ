@@ -78,11 +78,6 @@ export function useTerminalWebSocket({
 
       ws.onopen = () => {
         if (disposed) { ws.close(); return; }
-        // Send a default resize immediately on connect — the TerminalView
-        // connected effect will follow up with the precise dimensions once
-        // FitAddon measures the container, but this ensures the PTY gets a
-        // reasonable size even if the React effect chain is delayed.
-        ws.send(JSON.stringify({ type: "resize", cols: 200, rows: 50 }));
         setConnected(true);
         reconnectCount.current = 0;
       };
