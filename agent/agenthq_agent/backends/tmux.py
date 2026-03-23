@@ -70,7 +70,7 @@ class TmuxBackend(SessionBackend):
         """Apply AgentHQ defaults to a tmux session: mouse, scrollback, etc."""
         for cmd in [
             ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
-            ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "off"],
+            ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "on"],
             ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
             # Keep pane alive when Claude exits — prevents session death cycle.
             # Dead panes are respawned by _respawn_if_dead() on next heartbeat.
@@ -527,11 +527,11 @@ class TmuxBackend(SessionBackend):
             ["tmux", "set-option", "-t", pane, "mouse", "on"],
             capture_output=True, timeout=5,
         )
-        # Disable alternate-screen passthrough so all content goes to xterm.js's
-        # normal buffer, enabling scrollback. Without this, full-screen apps
-        # (Claude Code) use the alternate screen and xterm.js scrollback stays empty.
+        # Keep alternate-screen on (default) so full-screen apps (Claude Code,
+        # brew progress) render correctly with cursor positioning. Scrollback
+        # is handled by tmux's own history buffer (mouse scroll enters copy mode).
         subprocess.run(
-            ["tmux", "set-window-option", "-t", pane, "alternate-screen", "off"],
+            ["tmux", "set-window-option", "-t", pane, "alternate-screen", "on"],
             capture_output=True, timeout=5,
         )
         # Large scrollback for tmux copy-mode history
