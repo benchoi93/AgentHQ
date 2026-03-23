@@ -1057,11 +1057,28 @@ async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> N
 # Main
 # ---------------------------------------------------------------------------
 
+def _check_pidfile(state_dir: Path) -> None:
+    """Ensure only one agent runs at a time. Exit if another is alive."""
+    pidfile = state_dir / "agent.pid"
+    if pidfile.exists():
+        try:
+            old_pid = int(pidfile.read_text().strip())
+            os.kill(old_pid, 0)  # check if alive (signal 0 = no-op)
+            log.error("Another agent is already running (PID %d). Exiting.", old_pid)
+            raise SystemExit(1)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # stale pidfile — previous agent died
+    pidfile.write_text(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: pidfile.unlink(missing_ok=True))
+
+
 async def run(cfg: dict[str, Any]) -> None:
     global _backend
     # Store managed sessions next to the config file, or in ~/.agenthq/
     state_dir = Path(cfg.get("_config_dir", Path.home() / ".agenthq"))
     state_dir.mkdir(parents=True, exist_ok=True)
+    _check_pidfile(state_dir)
     _backend = get_backend(state_dir)
     _backend.load_sessions()
 
