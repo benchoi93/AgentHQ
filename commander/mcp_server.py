@@ -9,6 +9,8 @@ import base64
 import json
 import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 
 import aiohttp
 from mcp.server.fastmcp import FastMCP
@@ -22,7 +24,48 @@ AGENTHQ_TOKEN = os.environ.get("AGENTHQ_TOKEN", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+STATE_FILE = Path(
+    os.environ.get(
+        "COMMANDER_STATE_FILE",
+        str(Path(__file__).parent / "commander_state.json"),
+    )
+)
+
 mcp = FastMCP("commander")
+
+# ---------------------------------------------------------------------------
+# Deny-list for command guardrails
+# ---------------------------------------------------------------------------
+
+_DENY_PATTERNS: list[re.Pattern] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"\brm\s+-[^\s]*r[^\s]*\s",   # rm -rf / rm -r
+        r"\brm\s+-[^\s]*f[^\s]*\s",   # rm -f (recursive forms)
+        r"git\s+push\s+.*--force",     # git push --force
+        r"git\s+push\s+.*-f\b",        # git push -f
+        r"\bdrop\s+table\b",           # DROP TABLE
+        r"\btruncate\s+table\b",       # TRUNCATE TABLE
+        r"\bdrop\s+database\b",        # DROP DATABASE
+        r"git\s+reset\s+--hard",       # git reset --hard
+        r"git\s+clean\s+-[^\s]*f",     # git clean -f / -fd
+        r"chmod\s+-[^\s]*R.*777",      # chmod -R 777
+        r"mkfs\b",                      # mkfs (format disk)
+        r"dd\s+if=.*of=/dev/",          # dd to device
+    ]
+]
+
+
+def _check_deny_list(command: str) -> str | None:
+    """Return a human-readable reason if the command is blocked, else None."""
+    # Ensure the pattern for rm -rf matches even without trailing space
+    rm_rf = re.compile(r"\brm\s+-[^\s]*r[^\s]*", re.IGNORECASE)
+    if rm_rf.search(command):
+        return "blocked: rm with recursive flag is not allowed"
+    for pat in _DENY_PATTERNS:
+        if pat.search(command):
+            return f"blocked: matches guardrail pattern '{pat.pattern}'"
+    return None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,6 +92,38 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+# ---------------------------------------------------------------------------
+# Persistent state helpers
+# ---------------------------------------------------------------------------
+
+_MAX_ROUTING_HISTORY = 50
+_MAX_AUDIT_LOG = 200
+
+
+def _load_state_file() -> dict:
+    """Load state from disk; return empty scaffold on first run or corruption."""
+    if STATE_FILE.exists():
+        try:
+            with STATE_FILE.open() as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {
+        "active_tasks": {},
+        "routing_history": [],
+        "user_preferences": {},
+        "last_known_sessions": [],
+        "audit_log": [],
+    }
+
+
+def _save_state_file(state: dict) -> None:
+    """Atomically write state to disk."""
+    tmp = STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, default=str))
+    tmp.replace(STATE_FILE)
+
+
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {AGENTHQ_TOKEN}"}
 
@@ -63,6 +138,72 @@ def _ws_url(path: str) -> str:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def save_state(key: str, value: str) -> str:
+    """Persist a value in commander_state.json under the given key.
+
+    Use dot-notation for nested keys (e.g. "user_preferences.autonomy").
+    Value is stored as a JSON-parsed object if valid JSON, otherwise as a string.
+
+    Special managed keys:
+      - "active_tasks"         : dict of {task_id → task record}
+      - "routing_history"      : auto-trimmed to last 50 entries when a list is appended
+      - "user_preferences"     : arbitrary preferences dict
+      - "last_known_sessions"  : list of session IDs from last heartbeat
+
+    Args:
+        key: Dot-separated key path (e.g. "active_tasks.abc123").
+        value: JSON string or plain string to store.
+    """
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        parsed = value
+
+    state = _load_state_file()
+
+    parts = key.split(".", 1)
+    if len(parts) == 2:
+        top, sub = parts
+        if top not in state or not isinstance(state[top], dict):
+            state[top] = {}
+        state[top][sub] = parsed
+    else:
+        state[key] = parsed
+
+    # Trim routing_history to last _MAX_ROUTING_HISTORY entries
+    if isinstance(state.get("routing_history"), list):
+        state["routing_history"] = state["routing_history"][-_MAX_ROUTING_HISTORY:]
+
+    _save_state_file(state)
+    return f"Saved: {key}"
+
+
+@mcp.tool()
+async def load_state(key: str = "") -> str:
+    """Load a value from commander_state.json.
+
+    Args:
+        key: Dot-separated key path (e.g. "active_tasks.abc123").
+             Pass an empty string (or omit) to return the entire state.
+    """
+    state = _load_state_file()
+
+    if not key:
+        return json.dumps(state, indent=2, default=str)
+
+    parts = key.split(".", 1)
+    if len(parts) == 2:
+        top, sub = parts
+        result = state.get(top, {}).get(sub)
+    else:
+        result = state.get(key)
+
+    if result is None:
+        return f"(no value for key '{key}')"
+    return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
@@ -144,10 +285,36 @@ async def send_to_session(session_id: str, message: str) -> str:
     The agent-side relay handler will call `tmux send-keys` to type the message
     into the session's terminal pane.
 
+    Commands matching the deny-list (rm -rf, git push --force, DROP TABLE, etc.)
+    are blocked and will NOT be sent. All send attempts (including blocked ones)
+    are appended to the audit log in commander_state.json.
+
     Args:
         session_id: Target session ID.
         message: Text to send (will be followed by Enter automatically).
     """
+    # --- Guardrail: deny-list check ---
+    block_reason = _check_deny_list(message)
+
+    # --- Audit log ---
+    now = datetime.now(timezone.utc).isoformat()
+    state = _load_state_file()
+    audit_entry = {
+        "ts": now,
+        "session_id": session_id,
+        "message": message,
+        "blocked": block_reason is not None,
+        "block_reason": block_reason,
+    }
+    if not isinstance(state.get("audit_log"), list):
+        state["audit_log"] = []
+    state["audit_log"].append(audit_entry)
+    state["audit_log"] = state["audit_log"][-_MAX_AUDIT_LOG:]
+    _save_state_file(state)
+
+    if block_reason:
+        return f"BLOCKED — {block_reason}. Command was NOT sent. Entry logged in audit log."
+
     url = _ws_url(f"/ws/relay/{session_id}?role=client")
 
     try:
