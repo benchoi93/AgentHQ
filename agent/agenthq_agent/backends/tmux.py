@@ -109,24 +109,28 @@ class TmuxBackend(SessionBackend):
 
     @staticmethod
     def _auto_accept_trust(tmux_name: str) -> None:
-        """Send Enter to auto-accept Claude Code's 'Trust this folder?' dialog.
+        """Send Enter to auto-accept Claude Code's trust dialogs.
 
-        Claude Code shows a trust prompt on first launch in a new directory.
-        --dangerously-skip-permissions doesn't skip this dialog, so we send
-        Enter after a brief delay to accept it automatically.
+        Claude Code shows trust prompts on first launch in a new directory
+        and when connecting to MCP servers for the first time.
+        --dangerously-skip-permissions doesn't skip these dialogs, so we
+        send Enter at multiple intervals to catch them reliably.
         """
         import threading
 
         def _send_enter():
-            time.sleep(3)  # Wait for Claude Code to show the trust dialog
-            try:
-                subprocess.run(
-                    ["tmux", "send-keys", "-t", tmux_name, "", "Enter"],
-                    capture_output=True, timeout=5,
-                )
-                log.info("Auto-accepted trust dialog for '%s'", tmux_name)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+            # Send Enter at 3s, 6s, and 10s to catch workspace trust,
+            # MCP server trust, and other startup prompts.
+            for delay in (3, 3, 4):
+                time.sleep(delay)
+                try:
+                    subprocess.run(
+                        ["tmux", "send-keys", "-t", tmux_name, "", "Enter"],
+                        capture_output=True, timeout=5,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            log.info("Auto-accepted trust dialogs for '%s'", tmux_name)
 
         threading.Thread(target=_send_enter, daemon=True).start()
 

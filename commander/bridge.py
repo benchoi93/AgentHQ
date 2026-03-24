@@ -50,6 +50,7 @@ _COMMAND_ROUTES: dict[str, str] = {
     "new":     "[command] Create a new Claude Code session: {args}. Format: machine directory [name]. Confirm via send_telegram.",
     "machines":"[command] List all machines with their session counts. Send via send_telegram.",
     "explore": "[command] Explore this idea and set it up as a new project: {args}",
+    "recover": "[command] Toggle auto-recovery for session: {args}. Parse as: project [on|off]. Update session_registry accordingly and confirm via send_telegram.",
 }
 
 

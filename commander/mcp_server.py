@@ -224,7 +224,7 @@ async def list_sessions() -> str:
     for s in sessions:
         lines.append(
             f"• {s.get('project', '?')} | {s.get('status', '?')} | "
-            f"machine={s.get('machine', '?')} | id={s['id']}"
+            f"machine={s.get('machine', '?')} | path={s.get('path', '?')} | id={s['id']}"
         )
     return "\n".join(lines)
 
