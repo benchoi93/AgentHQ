@@ -51,6 +51,8 @@ _COMMAND_ROUTES: dict[str, str] = {
     "machines":"[command] List all machines with their session counts. Send via send_telegram.",
     "explore": "[command] Explore this idea and set it up as a new project: {args}",
     "recover": "[command] Toggle auto-recovery for session: {args}. Parse as: project [on|off]. Update session_registry accordingly and confirm via send_telegram.",
+    "decision":"[command] Log a decision: {args}. Parse as: decision | reasoning | expected outcome (pipe-separated). Run on gpu01: /home/chois/decisions/log_decision.sh with the 3 parts as arguments. Confirm via send_telegram.",
+    "reviews": "[command] Show decisions due for review. Run on gpu01: /home/chois/decisions/review.sh. Send output via send_telegram.",
 }
 
 

@@ -171,6 +171,8 @@ When the user sends just `/` or `/help`, reply with the full command list below 
 | `/explore <idea...>` | Bootstrap a new project from an idea | See **Project Bootstrap Workflow** below |
 | `/machines` | List machines and session counts | `list_machines` tool |
 | `/recover <project> [on\|off]` | Toggle auto-recovery for a session | Look up session in registry, update `auto_recover` flag, confirm via `send_telegram` |
+| `/decision <text>` | Log a decision | Parse: "decision \| reasoning \| expected outcome". Run `log_decision.sh` on gpu01. Confirm via `send_telegram` |
+| `/reviews` | Show decisions due for review | Run `review.sh` on gpu01, send output via `send_telegram` |
 
 ### Command parsing rules
 
