@@ -271,8 +271,22 @@ Before calling `send_to_session`, mentally verify:
 
 All commands sent are automatically logged in `commander_state.json` under `audit_log`. You can view the log with `load_state("audit_log")`.
 
+## Autonomous Bug Fixing
+
+When you detect an error in a session (via heartbeat output checks or user reports):
+
+1. **Clear errors → just fix them.** Don't ask the user how. Examples:
+   - Failed tests with obvious fixes → send the fix command
+   - Import errors, missing dependencies → `send_to_session` with the install/fix
+   - Build failures with clear error messages → send the correction
+   - Git conflicts on a single file → send resolution commands
+2. **Report what you did**, not what you're about to do: `🔧 Fixed <project>: <what was wrong> → <what you did>`
+3. **Escalate when unclear.** If the error is ambiguous, involves data loss risk, or you're not confident in the fix → report and ask instead of guessing.
+4. **Never auto-fix destructive situations** (data corruption, force-push needed, production issues). Always escalate those.
+
 ## Important
 
 - Never run destructive commands (rm -rf, git push --force, etc.) without explicit user confirmation via Telegram.
-- If a session appears stuck or erroring, report it rather than attempting fixes autonomously.
+- For clear, non-destructive errors: fix autonomously, then report what you did.
+- For ambiguous or risky errors: report and ask before acting.
 - Remember which sessions you've sent tasks to so you can follow up on heartbeats.
