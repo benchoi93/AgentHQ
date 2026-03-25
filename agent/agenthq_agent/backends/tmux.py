@@ -374,10 +374,37 @@ class TmuxBackend(SessionBackend):
         if not pane:
             return None
         try:
-            subprocess.run(
-                ["tmux", "send-keys", "-t", pane, content, "Enter"],
-                capture_output=True, timeout=5,
-            )
+            if len(content) > 500:
+                # For long messages, use tmux load-buffer + paste-buffer
+                # to avoid shell argument length limits and send-keys issues.
+                import tempfile
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False
+                ) as f:
+                    f.write(content)
+                    tmp_path = f.name
+                try:
+                    subprocess.run(
+                        ["tmux", "load-buffer", tmp_path],
+                        capture_output=True, timeout=5,
+                    )
+                    subprocess.run(
+                        ["tmux", "paste-buffer", "-t", pane],
+                        capture_output=True, timeout=5,
+                    )
+                    # Send Enter to submit the pasted text
+                    subprocess.run(
+                        ["tmux", "send-keys", "-t", pane, "", "Enter"],
+                        capture_output=True, timeout=5,
+                    )
+                finally:
+                    import os
+                    os.unlink(tmp_path)
+            else:
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", pane, content, "Enter"],
+                    capture_output=True, timeout=5,
+                )
             return f"[sent to tmux:{pane}]"
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             return f"tmux error: {exc}"
