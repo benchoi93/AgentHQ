@@ -79,12 +79,11 @@ class TmuxBackend(SessionBackend):
             subprocess.run(cmd, capture_output=True, timeout=5)
 
     @staticmethod
-    def _respawn_if_dead(tmux_name: str) -> bool:
-        """Check if a tmux pane is dead and respawn it if so.
+    def _is_pane_dead(tmux_name: str) -> bool:
+        """Check if a tmux pane's process has exited (pane is dead).
 
-        With remain-on-exit, dead panes show 'Pane is dead' but the session
-        stays alive. This respawns Claude Code in the same pane.
-        Returns True if pane was respawned.
+        With remain-on-exit, dead panes persist but show 'Pane is dead'.
+        Returns True if the pane exists but the process has exited.
         """
         try:
             result = subprocess.run(
@@ -93,16 +92,29 @@ class TmuxBackend(SessionBackend):
             )
             if result.returncode != 0:
                 return False
-            is_dead = result.stdout.strip() == "1"
-            if is_dead:
-                subprocess.run(
-                    ["tmux", "respawn-pane", "-k", "-t", tmux_name,
-                     "claude", "--dangerously-skip-permissions"],
-                    capture_output=True, timeout=5,
-                )
-                log.info("Respawned dead pane in '%s'", tmux_name)
-                TmuxBackend._auto_accept_trust(tmux_name)
-                return True
+            return result.stdout.strip() == "1"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    @staticmethod
+    def _respawn_if_dead(tmux_name: str) -> bool:
+        """Check if a tmux pane is dead and respawn it if so.
+
+        With remain-on-exit, dead panes show 'Pane is dead' but the session
+        stays alive. This respawns Claude Code in the same pane.
+        Returns True if pane was respawned.
+        """
+        if not TmuxBackend._is_pane_dead(tmux_name):
+            return False
+        try:
+            subprocess.run(
+                ["tmux", "respawn-pane", "-k", "-t", tmux_name,
+                 "claude", "--dangerously-skip-permissions"],
+                capture_output=True, timeout=5,
+            )
+            log.info("Respawned dead pane in '%s'", tmux_name)
+            TmuxBackend._auto_accept_trust(tmux_name)
+            return True
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
         return False
@@ -279,11 +291,13 @@ class TmuxBackend(SessionBackend):
     def discover_managed_sessions(self) -> list[dict[str, Any]]:
         result = []
         for sid, info in self.sessions.items():
-            if self._tmux_alive(info["tmux_name"]):
+            tmux_name = info["tmux_name"]
+            if self._tmux_alive(tmux_name):
+                status = "dead" if self._is_pane_dead(tmux_name) else "running"
                 result.append({
                     "id": sid,
                     "project": info["project"],
-                    "status": "running",
+                    "status": status,
                     "pid": None,
                     "path": info["path"],
                     "last_activity": time.time(),

@@ -222,10 +222,15 @@ async def list_sessions() -> str:
 
     lines = []
     for s in sessions:
-        lines.append(
-            f"• {s.get('project', '?')} | {s.get('status', '?')} | "
+        status = s.get("status", "?")
+        marker = "💀" if status == "dead" else "•"
+        line = (
+            f"{marker} {s.get('project', '?')} | {status} | "
             f"machine={s.get('machine', '?')} | path={s.get('path', '?')} | id={s['id']}"
         )
+        if status == "dead":
+            line += "  ← use restart_session or stop_session"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -392,6 +397,91 @@ async def create_session(machine: str, directory: str, session_name: str = "") -
                 return f"Error: HTTP {resp.status} — {body}"
     except Exception as exc:
         return f"Error creating session: {exc}"
+
+
+@mcp.tool()
+async def stop_session(session_id: str) -> str:
+    """Stop a Claude Code session by killing the tmux session.
+
+    Sends a stop command to the agent which kills the Claude process
+    and the tmux session, then removes it from managed sessions.
+
+    Args:
+        session_id: Target session ID (from list_sessions).
+    """
+    url = f"{AGENTHQ_URL}/api/sessions/{session_id}/stop"
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(url, headers=_auth_headers()) as resp:
+                body = await resp.json()
+                if resp.status == 404:
+                    return f"Error: Session '{session_id}' not found."
+                if resp.status != 200 or not body.get("ok"):
+                    return f"Error: HTTP {resp.status} — {body}"
+                cmd_id = body.get("command_id")
+
+            # Poll for result (up to 30s)
+            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+            for _ in range(30):
+                await asyncio.sleep(1)
+                async with http.get(poll_url, headers=_auth_headers()) as resp:
+                    if resp.status != 200:
+                        continue
+                    cmd = await resp.json()
+                    if cmd.get("status") in ("completed", "failed"):
+                        result = cmd.get("result", "")
+                        try:
+                            r = json.loads(result)
+                            return r.get("message", result)
+                        except (json.JSONDecodeError, TypeError):
+                            return result
+
+            return f"Stop command {cmd_id} queued — agent will process on next heartbeat."
+    except Exception as exc:
+        return f"Error stopping session: {exc}"
+
+
+@mcp.tool()
+async def restart_session(session_id: str) -> str:
+    """Restart a Claude Code session by killing and recreating the tmux session.
+
+    Useful when Claude Code has crashed (pane shows as 'dead') or is stuck.
+    The agent kills the existing tmux session and spawns a fresh one with
+    Claude Code in the same directory.
+
+    Args:
+        session_id: Target session ID (from list_sessions).
+    """
+    url = f"{AGENTHQ_URL}/api/sessions/{session_id}/restart"
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(url, headers=_auth_headers()) as resp:
+                body = await resp.json()
+                if resp.status == 404:
+                    return f"Error: Session '{session_id}' not found."
+                if resp.status != 200 or not body.get("ok"):
+                    return f"Error: HTTP {resp.status} — {body}"
+                cmd_id = body.get("command_id")
+
+            # Poll for result (up to 30s)
+            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+            for _ in range(30):
+                await asyncio.sleep(1)
+                async with http.get(poll_url, headers=_auth_headers()) as resp:
+                    if resp.status != 200:
+                        continue
+                    cmd = await resp.json()
+                    if cmd.get("status") in ("completed", "failed"):
+                        result = cmd.get("result", "")
+                        try:
+                            r = json.loads(result)
+                            return r.get("message", result)
+                        except (json.JSONDecodeError, TypeError):
+                            return result
+
+            return f"Restart command {cmd_id} queued — agent will process on next heartbeat."
+    except Exception as exc:
+        return f"Error restarting session: {exc}"
 
 
 @mcp.tool()
