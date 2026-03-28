@@ -503,7 +503,7 @@ async def stream_logs_for_session(
 
     while True:
         try:
-            async with http.ws_connect(ws_url, heartbeat=20) as ws:
+            async with http.ws_connect(ws_url) as ws:
                 log.info("Log WS connected for session %s", session["id"])
                 last_size = log_file.stat().st_size
                 last_send = time.monotonic()
