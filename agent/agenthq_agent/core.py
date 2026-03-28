@@ -506,26 +506,32 @@ async def stream_logs_for_session(
             async with http.ws_connect(ws_url, heartbeat=20) as ws:
                 log.info("Log WS connected for session %s", session["id"])
                 last_size = log_file.stat().st_size
+                last_send = time.monotonic()
                 while True:
                     await asyncio.sleep(poll_interval)
+                    now = time.monotonic()
                     try:
                         current_size = log_file.stat().st_size
                     except OSError:
                         continue
-                    if current_size <= last_size:
+                    if current_size > last_size:
+                        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(last_size)
+                            new_content = f.read()
                         last_size = current_size
-                        continue
-                    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                        f.seek(last_size)
-                        new_content = f.read()
-                    last_size = current_size
-                    if new_content.strip():
-                        await ws.send_json({
-                            "type": "log",
-                            "session_id": session["id"],
-                            "content": new_content,
-                            "timestamp": time.time(),
-                        })
+                        if new_content.strip():
+                            await ws.send_json({
+                                "type": "log",
+                                "session_id": session["id"],
+                                "content": new_content,
+                                "timestamp": time.time(),
+                            })
+                            last_send = now
+                    elif now - last_send > 30:
+                        await ws.send_json({"type": "ping"})
+                        last_send = now
+                    else:
+                        last_size = current_size
         except asyncio.CancelledError:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:

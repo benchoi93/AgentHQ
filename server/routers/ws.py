@@ -55,8 +55,7 @@ async def ws_logs(
     if role == "agent":
         await websocket.accept()
         try:
-            while True:
-                raw = await _receive_text(websocket, timeout=_WS_TIMEOUT_AGENT)
+            async for raw in websocket.iter_text():
                 data = _safe_json(raw)
                 if data is None:
                     continue
@@ -64,7 +63,7 @@ async def ws_logs(
                 data.setdefault("session_id", session_id)
                 data.setdefault("timestamp", datetime.utcnow().isoformat())
                 await manager.broadcast_log(session_id, data)
-        except (WebSocketDisconnect, asyncio.TimeoutError):
+        except WebSocketDisconnect:
             pass
     else:
         await manager.subscribe_logs(session_id, websocket)
