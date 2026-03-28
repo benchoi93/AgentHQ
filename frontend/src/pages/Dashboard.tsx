@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, LogOut, Filter, Bot, Plus } from "lucide-react";
+import { RefreshCw, LogOut, Filter, Bot, Plus, Monitor } from "lucide-react";
 import { getSessions } from "../api";
 import type { Session } from "../types";
 import SessionCard from "../components/SessionCard";
@@ -78,6 +78,13 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('/pixel-office')}
+                className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
+                title="Pixel Office"
+              >
+                <Monitor className="w-4 h-4" />
+              </button>
               <button
                 onClick={() => setShowNewSession(true)}
                 className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
