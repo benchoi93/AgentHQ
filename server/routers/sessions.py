@@ -24,6 +24,14 @@ async def list_sessions(
     return [SessionInfo(**row) for row in rows]
 
 
+@router.get("/activity")
+async def session_activity(
+    _token: str = Depends(require_token),
+):
+    """Return per-session activity status based on terminal buffer recency."""
+    return manager.get_activity_status()
+
+
 # Must be before /{session_id} to avoid being captured by the path param
 @router.get("/suggestions/projects")
 async def project_suggestions(

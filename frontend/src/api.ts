@@ -110,6 +110,15 @@ export function getProjectSuggestions(machine?: string): Promise<ProjectSuggesti
   return request<ProjectSuggestion[]>(`/api/sessions/suggestions/projects${qs ? `?${qs}` : ""}`);
 }
 
+export interface SessionActivity {
+  is_working: boolean
+  last_output_age_sec: number | null
+}
+
+export function getSessionActivity(): Promise<Record<string, SessionActivity>> {
+  return request<Record<string, SessionActivity>>('/api/sessions/activity')
+}
+
 export function getWsUrl(path: string): string {
   const token = localStorage.getItem("agenthq_token") || "";
   const base = BASE_URL.replace(/^http/, "ws");

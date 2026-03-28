@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
+from datetime import datetime
 from typing import Any
 
 from fastapi import WebSocket
@@ -232,6 +233,34 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.relay_clients[session_id].discard(ws)
+
+    # --- Activity detection ---
+
+    def get_activity_status(self) -> dict[str, dict[str, Any]]:
+        """Return activity status for all sessions with terminal buffers.
+
+        A session is considered 'working' if it produced terminal output
+        within the last 5 seconds (Claude Code streams continuously while
+        executing tools / generating text).
+        """
+        now = datetime.utcnow()
+        result: dict[str, dict[str, Any]] = {}
+        for session_id, buf in self.terminal_buffer.items():
+            if not buf:
+                result[session_id] = {"is_working": False, "last_output_age_sec": None}
+                continue
+            last_msg = buf[-1]
+            ts_str = last_msg.get("timestamp", "")
+            try:
+                last_ts = datetime.fromisoformat(ts_str)
+                age = (now - last_ts).total_seconds()
+            except (ValueError, TypeError):
+                age = 999.0
+            result[session_id] = {
+                "is_working": age < 5.0,
+                "last_output_age_sec": round(age, 1),
+            }
+        return result
 
     # --- Internal helpers ---
 

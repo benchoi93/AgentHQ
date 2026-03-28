@@ -58,18 +58,23 @@ export function AgentLabels({
 
         const session = sessionByCharId.get(id)
         const isActive = ch.isActive
+        const isWorking = ch.isWorking
         const isError = session?.status === 'error'
 
         let dotColor = 'transparent'
         if (isError) {
           dotColor = '#ef4444' // red
+        } else if (isActive && isWorking) {
+          dotColor = '#22c55e' // green — actively working
         } else if (isActive) {
-          dotColor = '#22c55e' // green
+          dotColor = '#eab308' // yellow — at prompt
         } else {
-          dotColor = '#eab308' // yellow for idle
+          dotColor = '#64748b' // slate — inactive
         }
 
-        const labelText = ch.folderName || session?.project || `Agent #${id}`
+        const projectName = ch.folderName || session?.project || `Agent #${id}`
+        const statusText = isError ? 'error' : isActive ? (isWorking ? 'working' : 'idle') : 'offline'
+        const labelText = `${projectName} · ${statusText}`
 
         return (
           <div

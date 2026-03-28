@@ -370,6 +370,13 @@ export class OfficeState {
     this.furniture = layoutToFurnitureInstances(modifiedFurniture)
   }
 
+  setAgentWorking(id: number, working: boolean): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.isWorking = working
+    }
+  }
+
   setAgentTool(id: number, tool: string | null): void {
     const ch = this.characters.get(id)
     if (ch) {

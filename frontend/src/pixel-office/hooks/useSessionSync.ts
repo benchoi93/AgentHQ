@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { getSessions } from '../../api'
+import { getSessions, getSessionActivity } from '../../api'
+import type { SessionActivity } from '../../api'
 import type { Session } from '../../types'
 import type { OfficeState } from '../engine/officeState'
 
@@ -36,7 +37,11 @@ export function useSessionSync({
 
   const syncSessions = useCallback(async () => {
     try {
-      const data = await getSessions()
+      // Fetch sessions and activity status in parallel
+      const [data, activity] = await Promise.all([
+        getSessions(),
+        getSessionActivity().catch(() => ({} as Record<string, SessionActivity>)),
+      ])
       setSessions(data)
       setError(null)
 
@@ -63,6 +68,7 @@ export function useSessionSync({
       // Add/update characters for current sessions
       for (let i = 0; i < activeSessions.length; i++) {
         const session = activeSessions[i]
+        const sessionActivity = activity[session.id]
 
         if (!sessionToChar.has(session.id)) {
           // New session — spawn character
@@ -74,18 +80,18 @@ export function useSessionSync({
           if (delay > 0) {
             setTimeout(() => {
               officeState.addAgent(charId, undefined, undefined, undefined, false, session.project || session.id)
-              applySessionState(officeState, charId, session)
+              applySessionState(officeState, charId, session, sessionActivity)
               charToSession.set(charId, session)
             }, delay)
           } else {
             officeState.addAgent(charId, undefined, undefined, undefined, false, session.project || session.id)
-            applySessionState(officeState, charId, session)
+            applySessionState(officeState, charId, session, sessionActivity)
             charToSession.set(charId, session)
           }
         } else {
           // Existing session — update state
           const charId = sessionToChar.get(session.id)!
-          applySessionState(officeState, charId, session)
+          applySessionState(officeState, charId, session, sessionActivity)
           charToSession.set(charId, session)
         }
       }
@@ -110,9 +116,18 @@ export function useSessionSync({
   }
 }
 
-function applySessionState(officeState: OfficeState, charId: number, session: Session): void {
+function applySessionState(
+  officeState: OfficeState,
+  charId: number,
+  session: Session,
+  activity?: SessionActivity,
+): void {
   const isActive = session.status === 'running' || session.status === 'error'
   officeState.setAgentActive(charId, isActive)
+
+  // Determine if the session is actively producing output
+  const isWorking = isActive && (activity?.is_working ?? true)
+  officeState.setAgentWorking(charId, isWorking)
 
   // Show error bubble for error sessions
   if (session.status === 'error') {

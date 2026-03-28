@@ -69,6 +69,7 @@ export function createCharacter(
     wanderCount: 0,
     wanderLimit: randomInt(WANDER_MOVES_BEFORE_REST_MIN, WANDER_MOVES_BEFORE_REST_MAX),
     isActive: true,
+    isWorking: true,
     seatId,
     bubbleType: null,
     bubbleTimer: 0,
@@ -93,9 +94,16 @@ export function updateCharacter(
 
   switch (ch.state) {
     case CharacterState.TYPE: {
-      if (ch.frameTimer >= TYPE_FRAME_DURATION_SEC) {
-        ch.frameTimer -= TYPE_FRAME_DURATION_SEC
-        ch.frame = (ch.frame + 1) % 2
+      // Only animate typing when actively producing output
+      if (ch.isActive && ch.isWorking) {
+        if (ch.frameTimer >= TYPE_FRAME_DURATION_SEC) {
+          ch.frameTimer -= TYPE_FRAME_DURATION_SEC
+          ch.frame = (ch.frame + 1) % 2
+        }
+      } else if (ch.isActive) {
+        // Sitting at desk but idle (waiting at prompt) — no animation
+        ch.frame = 0
+        ch.frameTimer = 0
       }
       // If no longer active, stand up and start wandering (after seatTimer expires)
       if (!ch.isActive) {
