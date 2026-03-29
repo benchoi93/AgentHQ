@@ -592,6 +592,80 @@ async def send_telegram(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Session → Commander callback
+# ---------------------------------------------------------------------------
+
+
+async def _send_telegram_internal(message: str) -> str:
+    """Internal helper to send Telegram (reusable without going through MCP)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(url, json=payload) as resp:
+                body = await resp.json()
+                if resp.status == 200 and body.get("ok"):
+                    return "sent"
+                return f"telegram_error: {body}"
+    except Exception as exc:
+        return f"telegram_error: {exc}"
+
+
+@mcp.tool()
+async def report_to_commander(
+    project: str,
+    status: str,
+    summary: str,
+    task_id: str = "",
+) -> str:
+    """Report task completion or progress back to the commander.
+
+    Call this when a task is finished, errored, or has significant progress.
+    The commander will be notified immediately via Telegram — no polling needed.
+
+    Args:
+        project: Project name (e.g. "inversesampling", "NSFCAREER").
+        status: One of "completed", "error", "in_progress".
+        summary: Brief description of what happened or the result.
+        task_id: Optional task ID from the commander (e.g. "t_1711976400").
+                 If provided, the matching active_task will be updated.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    state = _load_state_file()
+
+    # Store the report
+    if "session_reports" not in state or not isinstance(state.get("session_reports"), list):
+        state["session_reports"] = []
+    report = {
+        "ts": now,
+        "project": project,
+        "status": status,
+        "summary": summary,
+        "task_id": task_id or None,
+    }
+    state["session_reports"].append(report)
+    # Keep last 100 reports
+    state["session_reports"] = state["session_reports"][-100:]
+
+    # Update active_task if task_id provided
+    if task_id and "active_tasks" in state and task_id in state["active_tasks"]:
+        state["active_tasks"][task_id]["status"] = status
+        if status == "completed":
+            state["active_tasks"][task_id]["completed_at"] = now
+
+    _save_state_file(state)
+
+    # Send Telegram notification
+    emoji = {"completed": "✅", "error": "❌", "in_progress": "⏳"}.get(status, "📋")
+    tg_msg = f"{emoji} {project}: {summary}"
+    tg_result = await _send_telegram_internal(tg_msg)
+
+    if "telegram_error" in tg_result:
+        return f"Report saved but Telegram failed: {tg_result}"
+    return f"Report saved and commander notified."
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
