@@ -28,37 +28,24 @@ async def heartbeat(
     client_ip = request.client.host if request.client else None
     agent_id = _agent_id(payload.agent_name, payload.machine)
 
-    await store.upsert_agent(
-        agent_id=agent_id,
-        name=payload.agent_name,
-        machine=payload.machine,
-        ip=client_ip,
-        agent_version=payload.agent_version,
-    )
-
+    # Prepare session data
+    sessions = []
     reported_ids = []
     for sess in payload.sessions:
         reported_ids.append(sess.id)
-        # Convert float timestamp to ISO string for storage
         if isinstance(sess.last_activity, (int, float)):
             activity_str = datetime.fromtimestamp(
                 sess.last_activity, tz=timezone.utc
             ).isoformat()
         else:
             activity_str = sess.last_activity
-        await store.upsert_session(
-            session_id=sess.id,
-            agent_id=agent_id,
-            project=sess.project,
-            status=sess.status,
-            pid=sess.pid,
-            path=sess.path,
-            last_activity=activity_str,
-        )
+        sessions.append({
+            "id": sess.id, "project": sess.project, "status": sess.status,
+            "pid": sess.pid, "path": sess.path, "last_activity": activity_str,
+        })
 
-    await store.mark_missing_sessions_offline(agent_id, reported_ids)
-
-    # Store known projects from .claude/projects/ history
+    # Prepare known projects
+    projects = None
     if payload.known_projects:
         projects = []
         for kp in payload.known_projects:
@@ -69,16 +56,21 @@ async def heartbeat(
             else:
                 activity_str = kp.last_activity
             projects.append({
-                "id": kp.id,
-                "name": kp.name,
-                "path": kp.path,
-                "last_activity": activity_str,
+                "id": kp.id, "name": kp.name,
+                "path": kp.path, "last_activity": activity_str,
             })
-        await store.upsert_known_projects(agent_id, projects)
 
-    pending = await store.get_pending_commands(agent_id)
-    for cmd in pending:
-        await store.update_command(cmd["id"], "dispatched")
+    # Single transaction for all heartbeat DB ops
+    pending = await store.batch_heartbeat(
+        agent_id=agent_id,
+        name=payload.agent_name,
+        machine=payload.machine,
+        ip=client_ip,
+        agent_version=payload.agent_version,
+        sessions=sessions,
+        active_session_ids=reported_ids,
+        projects=projects,
+    )
 
     return {"ok": True, "agent_id": agent_id, "commands": pending}
 

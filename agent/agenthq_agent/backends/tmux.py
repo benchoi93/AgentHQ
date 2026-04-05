@@ -430,6 +430,7 @@ class TmuxBackend(SessionBackend):
     async def _pty_terminal(
         self, ws_url: str, cmd: list[str], label: str,
         http: aiohttp.ClientSession, cwd: str | None = None,
+        tmux_pane: str | None = None,
     ) -> None:
         """Generic PTY-backed interactive terminal over WebSocket.
 
@@ -531,7 +532,10 @@ class TmuxBackend(SessionBackend):
                             msg_type = data.get("type", "")
                             if msg_type == "input":
                                 raw = base64.b64decode(data["data"])
-                                os.write(master_fd, raw)
+                                try:
+                                    os.write(master_fd, raw)
+                                except OSError:
+                                    break
                             elif msg_type == "resize":
                                 cols = data.get("cols", 80)
                                 rows = data.get("rows", 24)
@@ -544,6 +548,18 @@ class TmuxBackend(SessionBackend):
                                     )
                                     cur_rows, cur_cols = rows, cols
                                     self._last_pty_size[label] = (rows, cols)
+                                # Force full screen redraw so new/reconnecting
+                                # viewers get the complete screen state
+                                if tmux_pane:
+                                    try:
+                                        subprocess.run(
+                                            ["tmux", "refresh-client",
+                                             "-t", tmux_pane],
+                                            capture_output=True, timeout=5,
+                                        )
+                                    except (subprocess.TimeoutExpired,
+                                            FileNotFoundError):
+                                        pass
                         elif msg.type in (aiohttp.WSMsgType.CLOSED,
                                           aiohttp.WSMsgType.ERROR):
                             break
@@ -557,20 +573,13 @@ class TmuxBackend(SessionBackend):
         finally:
             _cleanup_proc()
 
-    async def attach_terminal(
-        self, ws_url: str, session: dict[str, Any],
-        http: aiohttp.ClientSession, label: str,
-    ) -> None:
-        sid = session["id"]
-        pane = self.ensure_pane(session)
-        if not pane:
-            log.debug("No tmux pane for session %s, skipping terminal", sid)
-            return
-        # Respawn Claude if the pane is dead (remain-on-exit keeps pane alive)
-        self._respawn_if_dead(pane)
+    @staticmethod
+    def _prepare_pane_for_attach(pane: str) -> None:
+        """Sync helper: detach stale clients and configure tmux options.
+
+        Runs blocking subprocess calls — must be called via to_thread().
+        """
         # Detach stale tmux clients left over from previous agent connections.
-        # Without this, old clients stuck at 80x24 constrain the window size
-        # even with window-size=latest, because tmux still tracks them.
         try:
             result = subprocess.run(
                 ["tmux", "list-clients", "-t", pane,
@@ -587,31 +596,88 @@ class TmuxBackend(SessionBackend):
             pass
         # Set window-size=latest so tmux uses the most recently active client's
         # size instead of the smallest, then attach.
-        subprocess.run(
+        for cmd in [
             ["tmux", "set-option", "-t", pane, "window-size", "latest"],
-            capture_output=True, timeout=5,
-        )
-        # Enable mouse mode so scroll wheel events are forwarded to tmux
-        subprocess.run(
             ["tmux", "set-option", "-t", pane, "mouse", "on"],
-            capture_output=True, timeout=5,
-        )
-        # Keep alternate-screen on (default) so full-screen apps (Claude Code,
-        # brew progress) render correctly with cursor positioning. Scrollback
-        # is handled by tmux's own history buffer (mouse scroll enters copy mode).
-        subprocess.run(
             ["tmux", "set-window-option", "-t", pane, "alternate-screen", "on"],
-            capture_output=True, timeout=5,
-        )
-        # Large scrollback for tmux copy-mode history
-        subprocess.run(
             ["tmux", "set-option", "-t", pane, "history-limit", "50000"],
-            capture_output=True, timeout=5,
-        )
+        ]:
+            subprocess.run(cmd, capture_output=True, timeout=5)
+
+    async def attach_terminal(
+        self, ws_url: str, session: dict[str, Any],
+        http: aiohttp.ClientSession, label: str,
+    ) -> None:
+        sid = session["id"]
+        pane = self.ensure_pane(session)
+        if not pane:
+            log.debug("No tmux pane for session %s, skipping terminal", sid)
+            return
+        # Respawn Claude if the pane is dead (remain-on-exit keeps pane alive)
+        self._respawn_if_dead(pane)
+        # Prepare pane in a thread to avoid blocking the event loop
+        await asyncio.to_thread(self._prepare_pane_for_attach, pane)
         await self._pty_terminal(
             ws_url, ["tmux", "attach-session", "-t", pane],
-            label, http,
+            label, http, tmux_pane=pane,
         )
+
+    # -----------------------------------------------------------------------
+    # Idle management
+    # -----------------------------------------------------------------------
+
+    def get_sessions_idle_info(self) -> dict[str, float]:
+        """Return {session_id: idle_seconds} using tmux session_activity."""
+        now = time.time()
+        result: dict[str, float] = {}
+        for sid, info in self.sessions.items():
+            tmux_name = info.get("tmux_name", "")
+            if not self._tmux_alive(tmux_name):
+                continue
+            try:
+                proc = subprocess.run(
+                    ["tmux", "display", "-p", "-t", tmux_name,
+                     "#{session_activity}"],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    epoch = int(proc.stdout.strip())
+                    result[sid] = now - epoch
+            except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                pass
+        return result
+
+    def archive_session(self, session_id: str, archive_path: Path) -> bool:
+        """Capture full tmux scrollback and save to archive_path."""
+        info = self.sessions.get(session_id)
+        if not info:
+            return False
+        tmux_name = info.get("tmux_name", "")
+        if not self._tmux_alive(tmux_name):
+            return False
+        try:
+            proc = subprocess.run(
+                ["tmux", "capture-pane", "-t", tmux_name, "-p", "-S", "-"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return False
+            from datetime import datetime
+            header = (
+                f"=== AgentHQ Session Archive ===\n"
+                f"Project: {info.get('project', '?')}\n"
+                f"Path: {info.get('path', '?')}\n"
+                f"Session: {session_id}\n"
+                f"Archived: {datetime.utcnow().isoformat()}\n"
+                f"================================\n\n"
+            )
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            archive_path.write_text(header + proc.stdout, encoding="utf-8")
+            log.info("Archived session %s to %s", session_id, archive_path)
+            return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            log.warning("Failed to archive session %s: %s", session_id, exc)
+            return False
 
     async def attach_claude_terminal(
         self, ws_url: str, session: dict[str, Any],

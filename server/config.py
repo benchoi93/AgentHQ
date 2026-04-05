@@ -11,3 +11,7 @@ CORS_ORIGINS: list[str] = [
     for o in os.environ.get("AGENTHQ_CORS_ORIGINS", "").split(",")
     if o.strip()
 ]
+
+# Telegram integration for session callbacks
+TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")

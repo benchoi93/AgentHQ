@@ -33,6 +33,16 @@ STATE_FILE = Path(
 
 mcp = FastMCP("commander")
 
+# Lazy-init shared HTTP session for connection reuse across MCP tool calls
+_http_session: aiohttp.ClientSession | None = None
+
+
+async def _get_http() -> aiohttp.ClientSession:
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession()
+    return _http_session
+
 # ---------------------------------------------------------------------------
 # Deny-list for command guardrails
 # ---------------------------------------------------------------------------
@@ -209,13 +219,13 @@ async def load_state(key: str = "") -> str:
 @mcp.tool()
 async def list_sessions() -> str:
     """List all AgentHQ sessions with project, status, machine, and session ID."""
-    async with aiohttp.ClientSession() as http:
-        async with http.get(
-            f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()
-        ) as resp:
-            if resp.status != 200:
-                return f"Error: HTTP {resp.status} — {await resp.text()}"
-            sessions = await resp.json()
+    http = await _get_http()
+    async with http.get(
+        f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()
+    ) as resp:
+        if resp.status != 200:
+            return f"Error: HTTP {resp.status} — {await resp.text()}"
+        sessions = await resp.json()
 
     if not sessions:
         return "No sessions found."
@@ -250,25 +260,25 @@ async def get_session_output(session_id: str, lines: int = 50) -> str:
     chunks: list[bytes] = []
 
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(url) as ws:
-                # Collect buffered messages for up to 3 seconds.
-                async def _collect():
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            if data.get("type") == "output" and "data" in data:
-                                chunks.append(base64.b64decode(data["data"]))
-                        elif msg.type in (
-                            aiohttp.WSMsgType.CLOSED,
-                            aiohttp.WSMsgType.ERROR,
-                        ):
-                            break
+        http = await _get_http()
+        async with http.ws_connect(url) as ws:
+            # Collect buffered messages for up to 3 seconds.
+            async def _collect():
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "output" and "data" in data:
+                            chunks.append(base64.b64decode(data["data"]))
+                    elif msg.type in (
+                        aiohttp.WSMsgType.CLOSED,
+                        aiohttp.WSMsgType.ERROR,
+                    ):
+                        break
 
-                try:
-                    await asyncio.wait_for(_collect(), timeout=3)
-                except asyncio.TimeoutError:
-                    pass  # expected — collection window elapsed
+            try:
+                await asyncio.wait_for(_collect(), timeout=3)
+            except asyncio.TimeoutError:
+                pass  # expected — collection window elapsed
     except Exception as exc:
         return f"Error connecting to terminal WS: {exc}"
 
@@ -323,36 +333,36 @@ async def send_to_session(session_id: str, message: str) -> str:
     url = _ws_url(f"/ws/relay/{session_id}?role=client")
 
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(url) as ws:
-                await ws.send_json({"type": "input", "content": message})
+        http = await _get_http()
+        async with http.ws_connect(url) as ws:
+            await ws.send_json({"type": "input", "content": message})
 
-                # Wait up to 5s for confirmation from the agent
-                result_holder = []
+            # Wait up to 5s for confirmation from the agent
+            result_holder = []
 
-                async def _wait_confirm():
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            if data.get("type") == "output":
-                                result_holder.append(
-                                    data.get("content", "(no content)")
-                                )
-                                return
-                        elif msg.type in (
-                            aiohttp.WSMsgType.CLOSED,
-                            aiohttp.WSMsgType.ERROR,
-                        ):
+            async def _wait_confirm():
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "output":
                             result_holder.append(
-                                "WebSocket closed before confirmation"
+                                data.get("content", "(no content)")
                             )
                             return
+                    elif msg.type in (
+                        aiohttp.WSMsgType.CLOSED,
+                        aiohttp.WSMsgType.ERROR,
+                    ):
+                        result_holder.append(
+                            "WebSocket closed before confirmation"
+                        )
+                        return
 
-                try:
-                    await asyncio.wait_for(_wait_confirm(), timeout=5)
-                    return result_holder[0] if result_holder else "Sent"
-                except asyncio.TimeoutError:
-                    return "Sent (no confirmation within 5s — message may still be delivered)"
+            try:
+                await asyncio.wait_for(_wait_confirm(), timeout=5)
+                return result_holder[0] if result_holder else "Sent"
+            except asyncio.TimeoutError:
+                return "Sent (no confirmation within 5s — message may still be delivered)"
     except Exception as exc:
         return f"Error sending to session: {exc}"
 
@@ -380,21 +390,21 @@ async def create_session(machine: str, directory: str, session_name: str = "") -
     }
 
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(
-                url, json=payload, headers=_auth_headers()
-            ) as resp:
-                body = await resp.json()
-                if resp.status == 200 and body.get("ok"):
-                    name = session_name or directory.rstrip("/").split("/")[-1]
-                    return (
-                        f"Session creation queued for '{name}' on {machine}. "
-                        f"Command ID: {body.get('command_id')}. "
-                        f"It will appear within ~10s on the next agent heartbeat."
-                    )
-                if resp.status == 404:
-                    return f"Error: No agent found for machine '{machine}'."
-                return f"Error: HTTP {resp.status} — {body}"
+        http = await _get_http()
+        async with http.post(
+            url, json=payload, headers=_auth_headers()
+        ) as resp:
+            body = await resp.json()
+            if resp.status == 200 and body.get("ok"):
+                name = session_name or directory.rstrip("/").split("/")[-1]
+                return (
+                    f"Session creation queued for '{name}' on {machine}. "
+                    f"Command ID: {body.get('command_id')}. "
+                    f"It will appear within ~10s on the next agent heartbeat."
+                )
+            if resp.status == 404:
+                return f"Error: No agent found for machine '{machine}'."
+            return f"Error: HTTP {resp.status} — {body}"
     except Exception as exc:
         return f"Error creating session: {exc}"
 
@@ -411,32 +421,32 @@ async def stop_session(session_id: str) -> str:
     """
     url = f"{AGENTHQ_URL}/api/sessions/{session_id}/stop"
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(url, headers=_auth_headers()) as resp:
-                body = await resp.json()
-                if resp.status == 404:
-                    return f"Error: Session '{session_id}' not found."
-                if resp.status != 200 or not body.get("ok"):
-                    return f"Error: HTTP {resp.status} — {body}"
-                cmd_id = body.get("command_id")
+        http = await _get_http()
+        async with http.post(url, headers=_auth_headers()) as resp:
+            body = await resp.json()
+            if resp.status == 404:
+                return f"Error: Session '{session_id}' not found."
+            if resp.status != 200 or not body.get("ok"):
+                return f"Error: HTTP {resp.status} — {body}"
+            cmd_id = body.get("command_id")
 
-            # Poll for result (up to 30s)
-            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
-            for _ in range(30):
-                await asyncio.sleep(1)
-                async with http.get(poll_url, headers=_auth_headers()) as resp:
-                    if resp.status != 200:
-                        continue
-                    cmd = await resp.json()
-                    if cmd.get("status") in ("completed", "failed"):
-                        result = cmd.get("result", "")
-                        try:
-                            r = json.loads(result)
-                            return r.get("message", result)
-                        except (json.JSONDecodeError, TypeError):
-                            return result
+        # Poll for result (up to 30s)
+        poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+        for _ in range(30):
+            await asyncio.sleep(1)
+            async with http.get(poll_url, headers=_auth_headers()) as resp:
+                if resp.status != 200:
+                    continue
+                cmd = await resp.json()
+                if cmd.get("status") in ("completed", "failed"):
+                    result = cmd.get("result", "")
+                    try:
+                        r = json.loads(result)
+                        return r.get("message", result)
+                    except (json.JSONDecodeError, TypeError):
+                        return result
 
-            return f"Stop command {cmd_id} queued — agent will process on next heartbeat."
+        return f"Stop command {cmd_id} queued — agent will process on next heartbeat."
     except Exception as exc:
         return f"Error stopping session: {exc}"
 
@@ -454,32 +464,32 @@ async def restart_session(session_id: str) -> str:
     """
     url = f"{AGENTHQ_URL}/api/sessions/{session_id}/restart"
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(url, headers=_auth_headers()) as resp:
-                body = await resp.json()
-                if resp.status == 404:
-                    return f"Error: Session '{session_id}' not found."
-                if resp.status != 200 or not body.get("ok"):
-                    return f"Error: HTTP {resp.status} — {body}"
-                cmd_id = body.get("command_id")
+        http = await _get_http()
+        async with http.post(url, headers=_auth_headers()) as resp:
+            body = await resp.json()
+            if resp.status == 404:
+                return f"Error: Session '{session_id}' not found."
+            if resp.status != 200 or not body.get("ok"):
+                return f"Error: HTTP {resp.status} — {body}"
+            cmd_id = body.get("command_id")
 
-            # Poll for result (up to 30s)
-            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
-            for _ in range(30):
-                await asyncio.sleep(1)
-                async with http.get(poll_url, headers=_auth_headers()) as resp:
-                    if resp.status != 200:
-                        continue
-                    cmd = await resp.json()
-                    if cmd.get("status") in ("completed", "failed"):
-                        result = cmd.get("result", "")
-                        try:
-                            r = json.loads(result)
-                            return r.get("message", result)
-                        except (json.JSONDecodeError, TypeError):
-                            return result
+        # Poll for result (up to 30s)
+        poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+        for _ in range(30):
+            await asyncio.sleep(1)
+            async with http.get(poll_url, headers=_auth_headers()) as resp:
+                if resp.status != 200:
+                    continue
+                cmd = await resp.json()
+                if cmd.get("status") in ("completed", "failed"):
+                    result = cmd.get("result", "")
+                    try:
+                        r = json.loads(result)
+                        return r.get("message", result)
+                    except (json.JSONDecodeError, TypeError):
+                        return result
 
-            return f"Restart command {cmd_id} queued — agent will process on next heartbeat."
+        return f"Restart command {cmd_id} queued — agent will process on next heartbeat."
     except Exception as exc:
         return f"Error restarting session: {exc}"
 
@@ -487,13 +497,13 @@ async def restart_session(session_id: str) -> str:
 @mcp.tool()
 async def list_machines() -> str:
     """List all machines and their session counts."""
-    async with aiohttp.ClientSession() as http:
-        async with http.get(
-            f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()
-        ) as resp:
-            if resp.status != 200:
-                return f"Error: HTTP {resp.status} — {await resp.text()}"
-            sessions = await resp.json()
+    http = await _get_http()
+    async with http.get(
+        f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()
+    ) as resp:
+        if resp.status != 200:
+            return f"Error: HTTP {resp.status} — {await resp.text()}"
+        sessions = await resp.json()
 
     if not sessions:
         return "No sessions found."
@@ -530,42 +540,42 @@ async def run_shell(machine: str, command: str, cwd: str = None, timeout: int = 
         payload["cwd"] = cwd
 
     try:
-        async with aiohttp.ClientSession() as http:
-            # Queue the command
-            async with http.post(
-                url, json=payload, headers=_auth_headers()
+        http = await _get_http()
+        # Queue the command
+        async with http.post(
+            url, json=payload, headers=_auth_headers()
+        ) as resp:
+            body = await resp.json()
+            if resp.status != 200 or not body.get("ok"):
+                return f"Error: {body}"
+            cmd_id = body["command_id"]
+
+        # Poll for result (up to timeout + 20s)
+        poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
+        for _ in range(timeout + 20):
+            await asyncio.sleep(1)
+            async with http.get(
+                poll_url, headers=_auth_headers()
             ) as resp:
-                body = await resp.json()
-                if resp.status != 200 or not body.get("ok"):
-                    return f"Error: {body}"
-                cmd_id = body["command_id"]
+                if resp.status != 200:
+                    continue
+                cmd = await resp.json()
+                if cmd.get("status") in ("completed", "failed"):
+                    result = cmd.get("result", "")
+                    try:
+                        r = json.loads(result)
+                        parts = []
+                        if r.get("stdout"):
+                            parts.append(r["stdout"])
+                        if r.get("stderr"):
+                            parts.append(f"STDERR: {r['stderr']}")
+                        if r.get("error"):
+                            parts.append(f"ERROR: {r['error']}")
+                        return "\n".join(parts) if parts else f"Exit code: {r.get('returncode', '?')}"
+                    except (json.JSONDecodeError, TypeError):
+                        return result
 
-            # Poll for result (up to timeout + 20s)
-            poll_url = f"{AGENTHQ_URL}/api/agents/commands/{cmd_id}"
-            for _ in range(timeout + 20):
-                await asyncio.sleep(1)
-                async with http.get(
-                    poll_url, headers=_auth_headers()
-                ) as resp:
-                    if resp.status != 200:
-                        continue
-                    cmd = await resp.json()
-                    if cmd.get("status") in ("completed", "failed"):
-                        result = cmd.get("result", "")
-                        try:
-                            r = json.loads(result)
-                            parts = []
-                            if r.get("stdout"):
-                                parts.append(r["stdout"])
-                            if r.get("stderr"):
-                                parts.append(f"STDERR: {r['stderr']}")
-                            if r.get("error"):
-                                parts.append(f"ERROR: {r['error']}")
-                            return "\n".join(parts) if parts else f"Exit code: {r.get('returncode', '?')}"
-                        except (json.JSONDecodeError, TypeError):
-                            return result
-
-            return f"Command {cmd_id} timed out waiting for result"
+        return f"Command {cmd_id} timed out waiting for result"
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -581,12 +591,12 @@ async def send_telegram(message: str) -> str:
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
 
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(url, json=payload) as resp:
-                body = await resp.json()
-                if resp.status == 200 and body.get("ok"):
-                    return "Telegram message sent."
-                return f"Telegram error: {body}"
+        http = await _get_http()
+        async with http.post(url, json=payload) as resp:
+            body = await resp.json()
+            if resp.status == 200 and body.get("ok"):
+                return "Telegram message sent."
+            return f"Telegram error: {body}"
     except Exception as exc:
         return f"Error sending Telegram message: {exc}"
 
@@ -601,12 +611,12 @@ async def _send_telegram_internal(message: str) -> str:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(url, json=payload) as resp:
-                body = await resp.json()
-                if resp.status == 200 and body.get("ok"):
-                    return "sent"
-                return f"telegram_error: {body}"
+        http = await _get_http()
+        async with http.post(url, json=payload) as resp:
+            body = await resp.json()
+            if resp.status == 200 and body.get("ok"):
+                return "sent"
+            return f"telegram_error: {body}"
     except Exception as exc:
         return f"telegram_error: {exc}"
 

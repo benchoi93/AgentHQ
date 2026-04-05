@@ -65,6 +65,8 @@ def load_config(cli_args: argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("extra_project_dirs", [])
     cfg.setdefault("default_sessions", [])
     cfg.setdefault("sync_enabled", True)
+    cfg.setdefault("auto_compact_idle_minutes", 30)   # 0 to disable
+    cfg.setdefault("auto_clear_idle_minutes", 300)     # 5hr, 0 to disable
     # Track config dir for state file storage
     if cli_args.config and Path(cli_args.config).exists():
         cfg["_config_dir"] = str(Path(cli_args.config).resolve().parent)
@@ -293,6 +295,7 @@ def discover_all_sessions(
 _cached_sessions: list[dict[str, Any]] = []
 _cache_lock = asyncio.Lock()
 _backend: SessionBackend | None = None  # set by run()
+_session_compacted: dict[str, bool] = {}  # sid -> whether compacted since last user input
 
 
 async def _discover_async(
@@ -366,7 +369,9 @@ async def heartbeat_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> No
                     body = await resp.text()
                     log.warning("Heartbeat %d: %s", resp.status, body[:200])
         except asyncio.TimeoutError:
-            log.warning("Heartbeat timed out")
+            log.warning("Heartbeat timed out, retrying in 2s")
+            await asyncio.sleep(2)
+            continue  # immediate retry — skip the full interval sleep
         except aiohttp.ClientError as exc:
             log.warning("Heartbeat failed: %s: %s", type(exc).__name__, exc)
         except Exception as exc:
@@ -560,6 +565,7 @@ async def relay_for_session(
                         if data.get("type") != "input":
                             continue
                         content = data.get("content", "")
+                        _session_compacted[sid] = False  # new input → allow re-compact
 
                         if _backend is not None:
                             result = _backend.send_keys(session, content)
@@ -986,6 +992,117 @@ async def git_sync_loop(cfg: dict[str, Any], _http: aiohttp.ClientSession) -> No
 
 
 # ---------------------------------------------------------------------------
+# Idle Session Token Management
+# ---------------------------------------------------------------------------
+
+_MAX_ARCHIVES = 50  # keep last N archive files
+
+async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> None:
+    """Tiered idle management: compact idle sessions, archive+clear long-idle ones."""
+    compact_minutes = cfg.get("auto_compact_idle_minutes", 30)
+    clear_minutes = cfg.get("auto_clear_idle_minutes", 300)
+
+    if not compact_minutes and not clear_minutes:
+        log.info("Idle manager: disabled (both thresholds set to 0)")
+        return
+
+    compact_threshold = compact_minutes * 60 if compact_minutes else float("inf")
+    clear_threshold = clear_minutes * 60 if clear_minutes else float("inf")
+    check_interval = 300  # 5 minutes
+
+    # Wait for agent to settle
+    await asyncio.sleep(60)
+
+    log.info("Idle manager: compact=%dmin, clear=%dmin, check every %ds",
+             compact_minutes or 0, clear_minutes or 0, check_interval)
+
+    state_dir = Path(cfg.get("_config_dir", Path.home() / ".agenthq"))
+    archive_dir = state_dir / "archives"
+
+    while True:
+        try:
+            if _backend is None:
+                await asyncio.sleep(check_interval)
+                continue
+
+            idle_info = await asyncio.to_thread(_backend.get_sessions_idle_info)
+            if not idle_info:
+                await asyncio.sleep(check_interval)
+                continue
+
+            for sid, idle_sec in idle_info.items():
+                info = _backend.sessions.get(sid)
+                if not info:
+                    continue
+
+                tmux_name = info.get("tmux_name", "")
+
+                # Skip dead panes
+                if hasattr(_backend, "_is_pane_dead") and _backend._is_pane_dead(tmux_name):
+                    continue
+
+                session_dict = {
+                    "id": sid,
+                    "project": info.get("project", ""),
+                    "path": info.get("path", ""),
+                }
+
+                # Tier 2: archive + clear (long idle)
+                if idle_sec >= clear_threshold:
+                    project = info.get("project", "unknown")
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    archive_path = archive_dir / f"{project}_{ts}.txt"
+
+                    archived = await asyncio.to_thread(
+                        _backend.archive_session, sid, archive_path,
+                    )
+                    log.info(
+                        "Idle manager: clearing session %s (%s, idle %.0fmin)%s",
+                        sid, project, idle_sec / 60,
+                        f" — archived to {archive_path}" if archived else "",
+                    )
+
+                    await asyncio.to_thread(
+                        _backend.send_keys, session_dict, "/clear",
+                    )
+                    _session_compacted.pop(sid, None)
+
+                    # Prune old archives
+                    try:
+                        archives = sorted(archive_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime)
+                        for old in archives[:-_MAX_ARCHIVES]:
+                            old.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
+
+                # Tier 1: compact (moderate idle)
+                if idle_sec >= compact_threshold:
+                    if _session_compacted.get(sid, False):
+                        continue
+                    project = info.get("project", "unknown")
+                    log.info("Idle manager: compacting session %s (%s, idle %.0fmin)",
+                             sid, project, idle_sec / 60)
+                    await asyncio.to_thread(
+                        _backend.send_keys, session_dict, "/compact",
+                    )
+                    _session_compacted[sid] = True
+
+            # Prune stale entries
+            active_sids = set(_backend.sessions.keys())
+            for sid in list(_session_compacted.keys()):
+                if sid not in active_sids:
+                    del _session_compacted[sid]
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Idle manager error: %s", exc, exc_info=True)
+
+        await asyncio.sleep(check_interval)
+
+
+# ---------------------------------------------------------------------------
 # Session Manager
 # ---------------------------------------------------------------------------
 
@@ -1127,4 +1244,5 @@ async def run(cfg: dict[str, Any]) -> None:
             resilient("session_manager", session_manager, cfg, http),
             resilient("sync", sync_loop, cfg, http),
             resilient("git_sync", git_sync_loop, cfg, http),
+            resilient("idle_manager", idle_manager_loop, cfg, http),
         )

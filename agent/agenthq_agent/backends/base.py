@@ -81,3 +81,20 @@ class SessionBackend(ABC):
     @abstractmethod
     def save_sessions(self) -> None:
         """Persist managed sessions to disk."""
+
+    # --- Idle management (optional, non-abstract) ---
+
+    def get_sessions_idle_info(self) -> dict[str, float]:
+        """Return {session_id: idle_seconds} for all managed sessions.
+
+        Default implementation returns empty dict (no idle tracking).
+        Platform backends override to provide actual idle times.
+        """
+        return {}
+
+    def archive_session(self, session_id: str, archive_path: Path) -> bool:
+        """Capture session scrollback and save to archive_path.
+
+        Returns True on success. Default returns False (not supported).
+        """
+        return False

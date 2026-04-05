@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,13 +11,29 @@ from server import store
 from server.config import CORS_ORIGINS
 from server.routers import agents, sessions, sync, ws
 
+log = logging.getLogger("agenthq-server")
+
+_STALE_CHECK_INTERVAL = 30  # seconds
+
+
+async def _stale_session_cleanup() -> None:
+    """Background task: mark sessions offline for stale agents every 30s."""
+    while True:
+        try:
+            await store.mark_stale_agent_sessions_offline()
+        except Exception as exc:
+            log.warning("Stale session cleanup error: %s", exc)
+        await asyncio.sleep(_STALE_CHECK_INTERVAL)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure DB and tables exist
     await store.get_db()
+    task = asyncio.create_task(_stale_session_cleanup())
     yield
-    # Shutdown: close DB connection
+    # Shutdown: cancel background task and close DB
+    task.cancel()
     await store.close_db()
 
 

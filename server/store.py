@@ -59,6 +59,31 @@ CREATE TABLE IF NOT EXISTS sync_files (
     updated_by TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS session_callbacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL DEFAULT 'report',
+    status TEXT NOT NULL DEFAULT 'info',
+    summary TEXT NOT NULL,
+    task_id TEXT,
+    created_at TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_callbacks_session ON session_callbacks(session_id);
+CREATE INDEX IF NOT EXISTS idx_callbacks_created ON session_callbacks(created_at);
+
+-- Performance indexes (issue #1 from perf audit)
+CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON sessions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_hidden ON sessions(hidden);
+CREATE INDEX IF NOT EXISTS idx_commands_agent_status ON commands(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_known_projects_agent_id ON known_projects(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine);
+CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen);
 """
 
 
@@ -302,10 +327,10 @@ async def upsert_known_projects(
     """Replace known projects for an agent."""
     db = await get_db()
     await db.execute("DELETE FROM known_projects WHERE agent_id = ?", (agent_id,))
-    for p in projects:
-        await db.execute(
+    if projects:
+        await db.executemany(
             "INSERT OR REPLACE INTO known_projects (id, agent_id, name, path, last_activity) VALUES (?, ?, ?, ?, ?)",
-            (p["id"], agent_id, p["name"], p["path"], p["last_activity"]),
+            [(p["id"], agent_id, p["name"], p["path"], p["last_activity"]) for p in projects],
         )
     await db.commit()
 
@@ -325,6 +350,100 @@ async def list_known_projects(machine: Optional[str] = None) -> list[dict]:
     cursor = await db.execute(query, params)
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def batch_heartbeat(
+    agent_id: str,
+    name: str,
+    machine: str,
+    ip: Optional[str],
+    agent_version: Optional[str],
+    sessions: list[dict],
+    active_session_ids: list[str],
+    projects: Optional[list[dict]],
+) -> list[dict]:
+    """Perform all heartbeat DB ops in a single transaction (1 fsync).
+
+    Returns list of pending commands (already marked as dispatched).
+    """
+    db = await get_db()
+    now = datetime.utcnow().isoformat()
+
+    # 1. Upsert agent
+    await db.execute(
+        """
+        INSERT INTO agents (id, name, machine, last_seen, ip, agent_version)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            machine = excluded.machine,
+            last_seen = excluded.last_seen,
+            ip = excluded.ip,
+            agent_version = excluded.agent_version
+        """,
+        (agent_id, name, machine, now, ip, agent_version),
+    )
+
+    # 2. Upsert sessions
+    for sess in sessions:
+        await db.execute(
+            """
+            INSERT INTO sessions (id, agent_id, project, status, pid, path, last_activity)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                agent_id = excluded.agent_id,
+                project = excluded.project,
+                status = excluded.status,
+                pid = excluded.pid,
+                path = excluded.path,
+                last_activity = excluded.last_activity
+            WHERE hidden = 0
+            """,
+            (sess["id"], agent_id, sess["project"], sess["status"],
+             sess["pid"], sess["path"], sess["last_activity"]),
+        )
+
+    # 3. Mark missing sessions offline
+    if active_session_ids:
+        placeholders = ",".join("?" for _ in active_session_ids)
+        await db.execute(
+            f"UPDATE sessions SET status = 'offline' WHERE agent_id = ? AND id NOT IN ({placeholders})",
+            [agent_id, *active_session_ids],
+        )
+    else:
+        await db.execute(
+            "UPDATE sessions SET status = 'offline' WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+    # 4. Replace known projects (executemany)
+    if projects is not None:
+        await db.execute("DELETE FROM known_projects WHERE agent_id = ?", (agent_id,))
+        if projects:
+            await db.executemany(
+                "INSERT OR REPLACE INTO known_projects (id, agent_id, name, path, last_activity) VALUES (?, ?, ?, ?, ?)",
+                [(p["id"], agent_id, p["name"], p["path"], p["last_activity"]) for p in projects],
+            )
+
+    # 5. Fetch and batch-dispatch pending commands
+    cursor = await db.execute(
+        "SELECT * FROM commands WHERE agent_id = ? AND status = 'pending' ORDER BY created_at",
+        (agent_id,),
+    )
+    rows = await cursor.fetchall()
+    pending = [dict(row) for row in rows]
+
+    if pending:
+        ids = [cmd["id"] for cmd in pending]
+        placeholders = ",".join("?" for _ in ids)
+        await db.execute(
+            f"UPDATE commands SET status = 'dispatched', completed_at = ? WHERE id IN ({placeholders})",
+            [now, *ids],
+        )
+
+    # Single commit for the entire heartbeat
+    await db.commit()
+    return pending
 
 
 async def get_agent_by_machine(machine: str) -> Optional[dict]:
@@ -353,6 +472,52 @@ async def upsert_sync_file(path: str, content: str, hash: str, agent_id: str) ->
             updated_at = excluded.updated_at
         """,
         (path, content, hash, agent_id, now),
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+# --- Session callback operations ---
+
+async def create_callback(
+    session_id: str, project: str, event_type: str,
+    status: str, summary: str, task_id: Optional[str] = None,
+) -> int:
+    db = await get_db()
+    now = datetime.utcnow().isoformat()
+    cursor = await db.execute(
+        """INSERT INTO session_callbacks
+           (session_id, project, event_type, status, summary, task_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, project, event_type, status, summary, task_id, now),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def list_callbacks(
+    session_id: Optional[str] = None, unacknowledged_only: bool = True, limit: int = 50,
+) -> list[dict]:
+    db = await get_db()
+    query = "SELECT * FROM session_callbacks WHERE 1=1"
+    params: list = []
+    if session_id:
+        query += " AND session_id = ?"
+        params.append(session_id)
+    if unacknowledged_only:
+        query += " AND acknowledged = 0"
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    cursor = await db.execute(query, params)
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def acknowledge_callback(callback_id: int) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE session_callbacks SET acknowledged = 1 WHERE id = ?",
+        (callback_id,),
     )
     await db.commit()
     return cursor.rowcount > 0
