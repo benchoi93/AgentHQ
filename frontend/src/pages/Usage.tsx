@@ -38,12 +38,6 @@ function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function progressColor(pct: number): string {
-  if (pct > 95) return "bg-red-500";
-  if (pct > 80) return "bg-orange-500";
-  if (pct > 50) return "bg-yellow-500";
-  return "bg-green-500";
-}
 
 function barColor(cost: number, maxCost: number): string {
   if (maxCost === 0) return "bg-green-500";
@@ -86,8 +80,9 @@ const RANGE_LABELS: Record<TimeRange, string> = {
   "168": "7d",
 };
 
-// Monthly cost limit for overuse tracking
-const MONTHLY_COST_LIMIT = 200.0;
+// Cost reference — API list price equivalent (NOT actual billing)
+// Max20 plan costs $200/month flat + overuse; these numbers show what
+// the same usage would cost at pay-per-token API rates for context.
 
 // ---------------------------------------------------------------------------
 // Component
@@ -172,10 +167,10 @@ export default function Usage() {
     ? current.total_input_tokens + current.total_output_tokens
     : 0;
 
-  // Daily cost total for monthly tracking
-  const dailyCostTotal = history
-    ? history.daily.reduce((sum, d) => sum + d.cost_usd, 0)
-    : 0;
+  // Daily and monthly API-equivalent cost
+  const dailyCosts = history?.daily ?? [];
+  const todayCost = dailyCosts.length > 0 ? dailyCosts[dailyCosts.length - 1]?.cost_usd ?? 0 : 0;
+  const periodCostTotal = dailyCosts.reduce((sum, d) => sum + d.cost_usd, 0);
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -361,31 +356,36 @@ export default function Usage() {
               </div>
             </div>
 
-            {/* ── 2. Monthly Cost Progress ── */}
-            {history && (
+            {/* ── 2. API-Equivalent Cost Summary ── */}
+            {history && dailyCosts.length > 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                <h2 className="text-sm font-medium text-slate-300 mb-4">Monthly Overuse Budget</h2>
-                {(() => {
-                  const pct = Math.min(100, (dailyCostTotal / MONTHLY_COST_LIMIT) * 100);
-                  return (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-slate-400">
-                          Overuse Spend ({range === "168" ? "7d" : range === "48" ? "2d" : "24h"} window)
-                        </span>
-                        <span className="text-xs text-slate-400">
-                          {formatCost(dailyCostTotal)} / {formatCost(MONTHLY_COST_LIMIT)} ({pct.toFixed(1)}%)
-                        </span>
-                      </div>
-                      <div className="bg-slate-800 rounded-full h-4">
-                        <div
-                          className={`${progressColor(pct)} rounded-full h-4 transition-all`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })()}
+                <div className="flex items-center justify-between mb-1">
+                  <h2 className="text-sm font-medium text-slate-300">API-Equivalent Cost</h2>
+                  <span className="text-xs text-slate-500">
+                    What this usage would cost at pay-per-token API rates
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-4 mt-3">
+                  <div>
+                    <p className="text-xs text-slate-500 uppercase tracking-wider">Today</p>
+                    <p className="text-lg font-semibold text-green-400 tabular-nums">{formatCost(todayCost)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500 uppercase tracking-wider">
+                      {range === "168" ? "7-day" : range === "48" ? "2-day" : "24h"} Total
+                    </p>
+                    <p className="text-lg font-semibold text-green-400 tabular-nums">{formatCost(periodCostTotal)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500 uppercase tracking-wider">Projected /mo</p>
+                    <p className="text-lg font-semibold text-green-400 tabular-nums">
+                      {formatCost(todayCost * 30)}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 mt-3">
+                  Your Max20 plan ($200/mo + overuse) covers this at a fraction of list price.
+                </p>
               </div>
             )}
 
