@@ -187,7 +187,7 @@ async def heartbeat_loop(relay: RelayConnection, queue: CoalescingQueue, interva
         if time.time() - relay.last_send < interval:
             log.info("Skipping heartbeat — recent activity")
             continue
-        await queue.enqueue("[heartbeat] check active tasks and report any updates")
+        await queue.enqueue("[health-sweep] check session drops, stuck prompts, and in-progress tasks")
 
 
 # ---------------------------------------------------------------------------

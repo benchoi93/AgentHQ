@@ -9,4 +9,4 @@ agenthq_token: "your-agenthq-token"      # same as AGENTHQ_TOKEN on the server
 
 commander_session_id: "session-id-here"  # 대장 Claude Code session ID (from AgentHQ UI)
 
-heartbeat_interval: 60                   # seconds between heartbeat pings
+heartbeat_interval: 1800                 # seconds between health sweeps (30 min)

@@ -627,7 +627,13 @@ class TmuxBackend(SessionBackend):
     # -----------------------------------------------------------------------
 
     def get_sessions_idle_info(self) -> dict[str, float]:
-        """Return {session_id: idle_seconds} using tmux session_activity."""
+        """Return {session_id: idle_seconds} using tmux window_activity.
+
+        Uses window_activity (last output in the window) rather than
+        session_activity (last client interaction), because session_activity
+        does not update from programmatic send-keys or process output —
+        only from attached-client keystrokes.
+        """
         now = time.time()
         result: dict[str, float] = {}
         for sid, info in self.sessions.items():
@@ -637,7 +643,7 @@ class TmuxBackend(SessionBackend):
             try:
                 proc = subprocess.run(
                     ["tmux", "display", "-p", "-t", tmux_name,
-                     "#{session_activity}"],
+                     "#{window_activity}"],
                     capture_output=True, text=True, timeout=3,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
