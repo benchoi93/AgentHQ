@@ -43,9 +43,7 @@ PRICING = {
 }
 
 PLAN_LIMITS = {
-    "pro": {"token_limit": 19_000, "cost_limit": 18.0},
-    "max5": {"token_limit": 88_000, "cost_limit": 35.0},
-    "max20": {"token_limit": 220_000, "cost_limit": 140.0},
+    "max20_monthly": {"label": "Max20 Monthly Overuse", "cost_limit": 200.0},
 }
 
 # ---------- In-memory cache ----------

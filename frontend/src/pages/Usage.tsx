@@ -7,7 +7,6 @@ import {
   ChevronDown,
   Zap,
   DollarSign,
-  MessageSquare,
   Flame,
   Server,
 } from "lucide-react";
@@ -87,17 +86,8 @@ const RANGE_LABELS: Record<TimeRange, string> = {
   "168": "7d",
 };
 
-// Plan definitions (token limits for reference bars)
-const PLAN_LABELS: Record<string, string> = {
-  pro: "Pro 19K",
-  max5: "Max5 88K",
-  max20: "Max20 220K",
-};
-const PLAN_LIMITS: Record<string, number> = {
-  pro: 19_000,
-  max5: 88_000,
-  max20: 220_000,
-};
+// Monthly cost limit for overuse tracking
+const MONTHLY_COST_LIMIT = 200.0;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -177,12 +167,15 @@ export default function Usage() {
   // All known machine names for filter dropdown
   const machines = current?.by_machine ? Object.keys(current.by_machine).sort() : [];
 
-  // Plan progress — use server-provided plan_limits if available, else fallback
-  const planLimits: Record<string, number> = current?.plan_limits
-    ? Object.fromEntries(
-        Object.entries(current.plan_limits).map(([k, v]) => [k, v.token_limit]),
-      )
-    : PLAN_LIMITS;
+  // I/O tokens (input + output, excludes cache)
+  const ioTokens = current
+    ? current.total_input_tokens + current.total_output_tokens
+    : 0;
+
+  // Daily cost total for monthly tracking
+  const dailyCostTotal = history
+    ? history.daily.reduce((sum, d) => sum + d.cost_usd, 0)
+    : 0;
 
   return (
     <div className="min-h-screen bg-slate-950">
@@ -302,54 +295,51 @@ export default function Usage() {
           <>
             {/* ── 1. Current Session Summary Cards ── */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Total Tokens */}
+              {/* I/O Tokens */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <Zap className="w-4 h-4 text-blue-400" />
                   <span className="text-xs text-slate-400 uppercase tracking-wider">
-                    Total Tokens
+                    I/O Tokens
                   </span>
                 </div>
                 <p className="text-2xl font-bold text-blue-400">
-                  {formatTokens(current.total_tokens)}
+                  {formatTokens(ioTokens)}
                 </p>
-                {/* Mini progress vs Max20 limit */}
-                <div className="mt-2 bg-slate-800 rounded-full h-1.5">
-                  <div
-                    className="bg-blue-500 rounded-full h-1.5 transition-all"
-                    style={{
-                      width: `${Math.min(100, (current.total_tokens / 220_000) * 100)}%`,
-                    }}
-                  />
-                </div>
                 <p className="text-xs text-slate-500 mt-1">
-                  {((current.total_tokens / 220_000) * 100).toFixed(1)}% of Max20
+                  In: {formatTokens(current.total_input_tokens)} &middot; Out: {formatTokens(current.total_output_tokens)}
                 </p>
               </div>
 
-              {/* Total Cost */}
+              {/* Window Cost */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <DollarSign className="w-4 h-4 text-green-400" />
                   <span className="text-xs text-slate-400 uppercase tracking-wider">
-                    Total Cost
+                    Window Cost
                   </span>
                 </div>
                 <p className="text-2xl font-bold text-green-400">
                   {formatCost(current.total_cost_usd)}
                 </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {formatNumber(current.message_count)} messages
+                </p>
               </div>
 
-              {/* Messages */}
+              {/* Cache Tokens */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <MessageSquare className="w-4 h-4 text-purple-400" />
+                  <Zap className="w-4 h-4 text-cyan-400" />
                   <span className="text-xs text-slate-400 uppercase tracking-wider">
-                    Messages
+                    Cache Tokens
                   </span>
                 </div>
-                <p className="text-2xl font-bold text-purple-400">
-                  {formatNumber(current.message_count)}
+                <p className="text-2xl font-bold text-cyan-400">
+                  {formatTokens(current.total_cache_read_tokens + current.total_cache_creation_tokens)}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Write: {formatTokens(current.total_cache_creation_tokens)} &middot; Read: {formatTokens(current.total_cache_read_tokens)}
                 </p>
               </div>
 
@@ -362,29 +352,29 @@ export default function Usage() {
                   </span>
                 </div>
                 <p className="text-2xl font-bold text-amber-400">
-                  {formatTokens(current.burn_rate_tokens_per_min)}
-                  <span className="text-sm font-normal text-slate-400">/min</span>
+                  {formatCost(current.burn_rate_cost_per_hour)}
+                  <span className="text-sm font-normal text-slate-400">/hr</span>
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
-                  {formatCost(current.burn_rate_cost_per_hour)}/hr
+                  {formatTokens(current.burn_rate_tokens_per_min)} tok/min
                 </p>
               </div>
             </div>
 
-            {/* ── 2. Plan Progress Bars ── */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <h2 className="text-sm font-medium text-slate-300 mb-4">Plan Limits</h2>
-              <div className="space-y-3">
-                {Object.entries(planLimits).map(([key, limit]) => {
-                  const pct = Math.min(100, (current.total_tokens / limit) * 100);
-                  const label = PLAN_LABELS[key] || key;
+            {/* ── 2. Monthly Cost Progress ── */}
+            {history && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+                <h2 className="text-sm font-medium text-slate-300 mb-4">Monthly Overuse Budget</h2>
+                {(() => {
+                  const pct = Math.min(100, (dailyCostTotal / MONTHLY_COST_LIMIT) * 100);
                   return (
-                    <div key={key}>
+                    <div>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-slate-400">{label}</span>
                         <span className="text-xs text-slate-400">
-                          {formatNumber(current.total_tokens)} / {formatNumber(limit)} (
-                          {pct.toFixed(1)}%)
+                          Overuse Spend ({range === "168" ? "7d" : range === "48" ? "2d" : "24h"} window)
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {formatCost(dailyCostTotal)} / {formatCost(MONTHLY_COST_LIMIT)} ({pct.toFixed(1)}%)
                         </span>
                       </div>
                       <div className="bg-slate-800 rounded-full h-4">
@@ -395,9 +385,9 @@ export default function Usage() {
                       </div>
                     </div>
                   );
-                })}
+                })()}
               </div>
-            </div>
+            )}
 
             {/* ── 3. Per-Model Breakdown Table ── */}
             {modelEntries.length > 0 && (
