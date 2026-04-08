@@ -119,6 +119,73 @@ export function getSessionActivity(): Promise<Record<string, SessionActivity>> {
   return request<Record<string, SessionActivity>>('/api/sessions/activity')
 }
 
+export interface UsageModelBreakdown {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  message_count: number;
+}
+
+export interface UsageCurrentResponse {
+  window_start: string;
+  window_end: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_creation_tokens: number;
+  total_cache_read_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  message_count: number;
+  burn_rate_tokens_per_min: number;
+  burn_rate_cost_per_hour: number;
+  by_model: Record<string, UsageModelBreakdown>;
+  by_machine?: Record<string, UsageModelBreakdown>;
+  plan_limits: Record<string, { token_limit: number; cost_limit: number }>;
+}
+
+export interface UsageHourlyEntry {
+  hour: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  message_count: number;
+  by_model: Record<string, any>;
+}
+
+export interface UsageDailyEntry {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  message_count: number;
+}
+
+export interface UsageHistoryResponse {
+  hours: UsageHourlyEntry[];
+  daily: UsageDailyEntry[];
+}
+
+export function getUsageCurrent(machine?: string): Promise<UsageCurrentResponse> {
+  const params = new URLSearchParams();
+  if (machine) params.set('machine', machine);
+  const qs = params.toString();
+  return request<UsageCurrentResponse>(`/api/usage/current${qs ? `?${qs}` : ''}`);
+}
+
+export function getUsageHistory(hours?: number, machine?: string): Promise<UsageHistoryResponse> {
+  const params = new URLSearchParams();
+  if (hours) params.set('hours', hours.toString());
+  if (machine) params.set('machine', machine);
+  const qs = params.toString();
+  return request<UsageHistoryResponse>(`/api/usage/history${qs ? `?${qs}` : ''}`);
+}
+
 export function getWsUrl(path: string): string {
   const token = localStorage.getItem("agenthq_token") || "";
   const base = BASE_URL.replace(/^http/, "ws");

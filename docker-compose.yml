@@ -6,8 +6,10 @@ services:
     env_file: .env
     volumes:
       - db-data:/app/data
+      - ${HOME}/.claude/projects:/claude-data/projects:ro
     environment:
       - AGENTHQ_DB_PATH=/app/data/agenthq.db
+      - CLAUDE_DATA_PATH=/claude-data/projects
     restart: unless-stopped
 
   nginx:

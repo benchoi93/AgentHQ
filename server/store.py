@@ -84,6 +84,23 @@ CREATE INDEX IF NOT EXISTS idx_commands_agent_status ON commands(agent_id, statu
 CREATE INDEX IF NOT EXISTS idx_known_projects_agent_id ON known_projects(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine);
 CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen);
+
+CREATE TABLE IF NOT EXISTS usage_hourly (
+    machine TEXT NOT NULL,
+    hour TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (machine, hour, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_hourly_hour ON usage_hourly(hour);
+CREATE INDEX IF NOT EXISTS idx_usage_hourly_machine ON usage_hourly(machine);
 """
 
 
@@ -521,6 +538,64 @@ async def acknowledge_callback(callback_id: int) -> bool:
     )
     await db.commit()
     return cursor.rowcount > 0
+
+
+# --- Usage hourly operations ---
+
+async def upsert_usage_hourly(rows: list[dict]) -> int:
+    """Upsert hourly usage data reported by an agent. Returns count of rows upserted."""
+    if not rows:
+        return 0
+    db = await get_db()
+    now = datetime.utcnow().isoformat()
+    await db.executemany(
+        """
+        INSERT INTO usage_hourly
+            (machine, hour, model, input_tokens, output_tokens,
+             cache_creation_tokens, cache_read_tokens, cost_usd, message_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(machine, hour, model) DO UPDATE SET
+            input_tokens = excluded.input_tokens,
+            output_tokens = excluded.output_tokens,
+            cache_creation_tokens = excluded.cache_creation_tokens,
+            cache_read_tokens = excluded.cache_read_tokens,
+            cost_usd = excluded.cost_usd,
+            message_count = excluded.message_count,
+            updated_at = excluded.updated_at
+        """,
+        [
+            (
+                r["machine"], r["hour"], r["model"],
+                r["input_tokens"], r["output_tokens"],
+                r["cache_creation_tokens"], r["cache_read_tokens"],
+                r["cost_usd"], r["message_count"], now,
+            )
+            for r in rows
+        ],
+    )
+    await db.commit()
+    return len(rows)
+
+
+async def query_usage_hourly(
+    since: str,
+    until: str | None = None,
+    machine: str | None = None,
+) -> list[dict]:
+    """Query hourly usage data. since/until are ISO timestamps."""
+    db = await get_db()
+    query = "SELECT * FROM usage_hourly WHERE hour >= ?"
+    params: list = [since]
+    if until:
+        query += " AND hour < ?"
+        params.append(until)
+    if machine:
+        query += " AND machine = ?"
+        params.append(machine)
+    query += " ORDER BY hour, machine, model"
+    cursor = await db.execute(query, params)
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
 
 
 async def get_sync_manifest() -> list[dict]:

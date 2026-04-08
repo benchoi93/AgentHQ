@@ -997,6 +997,11 @@ async def git_sync_loop(cfg: dict[str, Any], _http: aiohttp.ClientSession) -> No
 
 _MAX_ARCHIVES = 50  # keep last N archive files
 
+# Track when sessions were last cleared/compacted to prevent re-triggering loops.
+# Maps session_id -> epoch time when the action was performed.
+_session_cleared: dict[str, float] = {}
+
+
 async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> None:
     """Tiered idle management: compact idle sessions, archive+clear long-idle ones."""
     compact_minutes = cfg.get("auto_compact_idle_minutes", 30)
@@ -1030,6 +1035,8 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
                 await asyncio.sleep(check_interval)
                 continue
 
+            now = time.time()
+
             for sid, idle_sec in idle_info.items():
                 info = _backend.sessions.get(sid)
                 if not info:
@@ -1049,9 +1056,20 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
 
                 # Tier 2: archive + clear (long idle)
                 if idle_sec >= clear_threshold:
+                    # Guard: don't re-clear a session that was already cleared
+                    # recently.  Only clear again after clear_threshold has
+                    # elapsed since the last clear AND tmux reports new idle
+                    # time (meaning session_activity actually moved forward
+                    # between the last clear and now).
+                    last_cleared = _session_cleared.get(sid, 0.0)
+                    if last_cleared > 0:
+                        time_since_clear = now - last_cleared
+                        if time_since_clear < clear_threshold:
+                            continue
+
                     project = info.get("project", "unknown")
                     ts = time.strftime("%Y%m%d_%H%M%S")
-                    archive_path = archive_dir / f"{project}_{ts}.txt"
+                    archive_path = archive_dir / f"{project}_{sid[:8]}_{ts}.txt"
 
                     archived = await asyncio.to_thread(
                         _backend.archive_session, sid, archive_path,
@@ -1065,6 +1083,7 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
                     await asyncio.to_thread(
                         _backend.send_keys, session_dict, "/clear",
                     )
+                    _session_cleared[sid] = now
                     _session_compacted.pop(sid, None)
 
                     # Prune old archives
@@ -1088,11 +1107,24 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
                     )
                     _session_compacted[sid] = True
 
+                # If session is below both thresholds, it became active again
+                # — reset the cleared/compacted tracking so future idle
+                # periods are handled fresh.
+                if idle_sec < compact_threshold:
+                    if sid in _session_cleared:
+                        log.info("Idle manager: session %s active again, resetting clear guard",
+                                 sid)
+                        del _session_cleared[sid]
+                    _session_compacted.pop(sid, None)
+
             # Prune stale entries
             active_sids = set(_backend.sessions.keys())
             for sid in list(_session_compacted.keys()):
                 if sid not in active_sids:
                     del _session_compacted[sid]
+            for sid in list(_session_cleared.keys()):
+                if sid not in active_sids:
+                    del _session_cleared[sid]
 
         except asyncio.CancelledError:
             raise
@@ -1177,6 +1209,191 @@ async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> N
 
 
 # ---------------------------------------------------------------------------
+# Usage reporter — collects local JSONL token data and sends to server
+# ---------------------------------------------------------------------------
+
+_USAGE_REPORT_INTERVAL = 60  # seconds
+_USAGE_HOURS_BACK = 192      # look back 8 days to match Claude Code session window
+
+# Pricing per million tokens (must stay in sync with server/routers/usage.py)
+_PRICING = {
+    "opus": {"input": 15.0, "output": 75.0, "cache_creation": 18.75, "cache_read": 1.5},
+    "sonnet": {"input": 3.0, "output": 15.0, "cache_creation": 3.75, "cache_read": 0.3},
+    "haiku": {"input": 0.25, "output": 1.25, "cache_creation": 0.3, "cache_read": 0.03},
+}
+
+
+def _extract_usage_tokens(data: dict) -> dict | None:
+    """Extract token counts from a JSONL entry."""
+    sources: list[dict] = []
+    msg = data.get("message", {})
+    if isinstance(msg, dict) and "usage" in msg:
+        sources.append(msg["usage"])
+    if "usage" in data:
+        sources.append(data["usage"])
+    sources.append(data)
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        input_t = src.get("input_tokens") or src.get("inputTokens") or 0
+        output_t = src.get("output_tokens") or src.get("outputTokens") or 0
+        if input_t > 0 or output_t > 0:
+            return {
+                "input_tokens": int(input_t),
+                "output_tokens": int(output_t),
+                "cache_creation_tokens": int(
+                    src.get("cache_creation_input_tokens")
+                    or src.get("cacheCreationInputTokens") or 0),
+                "cache_read_tokens": int(
+                    src.get("cache_read_input_tokens")
+                    or src.get("cacheReadInputTokens") or 0),
+            }
+    return None
+
+
+def _extract_usage_model(data: dict) -> str:
+    msg = data.get("message", {})
+    for c in [msg.get("model") if isinstance(msg, dict) else None, data.get("model")]:
+        if c and isinstance(c, str):
+            return c
+    return "unknown"
+
+
+def _calc_cost(model: str, tokens: dict) -> float:
+    ml = model.lower()
+    if "opus" in ml:
+        r = _PRICING["opus"]
+    elif "haiku" in ml:
+        r = _PRICING["haiku"]
+    else:
+        r = _PRICING["sonnet"]
+    return (
+        tokens["input_tokens"] / 1e6 * r["input"]
+        + tokens["output_tokens"] / 1e6 * r["output"]
+        + tokens["cache_creation_tokens"] / 1e6 * r["cache_creation"]
+        + tokens["cache_read_tokens"] / 1e6 * r["cache_read"]
+    )
+
+
+def _parse_ts(data: dict):
+    """Parse timestamp from JSONL entry → datetime or None."""
+    from datetime import datetime as _dt, timezone as _tz
+    ts_raw = data.get("timestamp")
+    if ts_raw is None:
+        return None
+    if isinstance(ts_raw, (int, float)):
+        return _dt.fromtimestamp(ts_raw, tz=_tz.utc)
+    if isinstance(ts_raw, str):
+        try:
+            d = _dt.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_tz.utc)
+            return d
+        except ValueError:
+            return None
+    return None
+
+
+def _collect_usage_hourly(cfg_dirs: list[str] | None = None) -> list[dict]:
+    """Scan JSONL files and return hourly-aggregated usage rows.
+
+    Returns list of dicts with keys:
+      hour, model, input_tokens, output_tokens, cache_creation_tokens,
+      cache_read_tokens, cost_usd, message_count
+    """
+    from datetime import datetime as _dt, timedelta, timezone as _tz
+    from collections import defaultdict as _dd
+
+    cutoff = _dt.now(_tz.utc) - timedelta(hours=_USAGE_HOURS_BACK)
+    buckets: dict[tuple[str, str], dict] = _dd(lambda: {
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_creation_tokens": 0, "cache_read_tokens": 0,
+        "cost_usd": 0.0, "message_count": 0,
+    })
+
+    for projects_dir in _claude_projects_dirs(cfg_dirs):
+        for jsonl_file in projects_dir.rglob("*.jsonl"):
+            try:
+                with open(jsonl_file, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        ts = _parse_ts(data)
+                        if ts is None or ts < cutoff:
+                            continue
+                        tokens = _extract_usage_tokens(data)
+                        if tokens is None:
+                            continue
+                        model = _extract_usage_model(data)
+                        cost = data.get("costUSD") or data.get("cost_usd") or _calc_cost(model, tokens)
+                        hour_key = ts.replace(minute=0, second=0, microsecond=0).isoformat()
+                        key = (hour_key, model)
+                        b = buckets[key]
+                        b["input_tokens"] += tokens["input_tokens"]
+                        b["output_tokens"] += tokens["output_tokens"]
+                        b["cache_creation_tokens"] += tokens["cache_creation_tokens"]
+                        b["cache_read_tokens"] += tokens["cache_read_tokens"]
+                        b["cost_usd"] += float(cost)
+                        b["message_count"] += 1
+            except Exception:
+                continue
+
+    return [
+        {
+            "hour": hour, "model": model,
+            "input_tokens": b["input_tokens"],
+            "output_tokens": b["output_tokens"],
+            "cache_creation_tokens": b["cache_creation_tokens"],
+            "cache_read_tokens": b["cache_read_tokens"],
+            "cost_usd": round(b["cost_usd"], 6),
+            "message_count": b["message_count"],
+        }
+        for (hour, model), b in sorted(buckets.items())
+    ]
+
+
+async def usage_reporter_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> None:
+    """Periodically collect local JSONL usage data and POST to the server."""
+    url = cfg["server_url"].rstrip("/") + "/api/usage/report"
+    headers = {"Authorization": f"Bearer {cfg['token']}"}
+    interval = cfg.get("usage_report_interval", _USAGE_REPORT_INTERVAL)
+    machine = platform.node()
+
+    while True:
+        try:
+            rows = await asyncio.to_thread(
+                _collect_usage_hourly, cfg.get("extra_project_dirs"),
+            )
+            if rows:
+                payload = {"machine": machine, "rows": rows}
+                async with http.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        log.info("Usage report sent (%d hourly rows)", len(rows))
+                    else:
+                        body = await resp.text()
+                        log.warning("Usage report %d: %s", resp.status, body[:200])
+            else:
+                log.debug("No usage data to report")
+        except asyncio.TimeoutError:
+            log.debug("Usage report timed out")
+        except aiohttp.ClientError as exc:
+            log.debug("Usage report failed: %s", exc)
+        except Exception as exc:
+            log.error("Usage report error: %s", exc, exc_info=True)
+        await asyncio.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1245,4 +1462,5 @@ async def run(cfg: dict[str, Any]) -> None:
             resilient("sync", sync_loop, cfg, http),
             resilient("git_sync", git_sync_loop, cfg, http),
             resilient("idle_manager", idle_manager_loop, cfg, http),
+            resilient("usage_reporter", usage_reporter_loop, cfg, http),
         )

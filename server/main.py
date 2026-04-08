@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server import store
 from server.config import CORS_ORIGINS
-from server.routers import agents, sessions, sync, ws
+from server.routers import agents, sessions, sync, usage, ws
 
 log = logging.getLogger("agenthq-server")
 
@@ -55,6 +55,7 @@ app.add_middleware(
 app.include_router(agents.router)
 app.include_router(sessions.router)
 app.include_router(sync.router)
+app.include_router(usage.router)
 app.include_router(ws.router)
 
 

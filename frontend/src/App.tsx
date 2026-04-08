@@ -12,6 +12,7 @@ import Dashboard from "./pages/Dashboard";
 import SessionDetail from "./pages/SessionDetail";
 
 const PixelOffice = lazy(() => import("./pages/PixelOffice"));
+const Usage = lazy(() => import("./pages/Usage"));
 
 function AuthGuard({ children }: { children: ReactNode }) {
   const location = useLocation();
@@ -55,6 +56,22 @@ export default function App() {
                 }
               >
                 <PixelOffice />
+              </Suspense>
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/usage"
+          element={
+            <AuthGuard>
+              <Suspense
+                fallback={
+                  <div className="h-screen flex items-center justify-center bg-slate-950 text-slate-500">
+                    Loading...
+                  </div>
+                }
+              >
+                <Usage />
               </Suspense>
             </AuthGuard>
           }

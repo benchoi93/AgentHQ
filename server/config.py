@@ -12,6 +12,11 @@ CORS_ORIGINS: list[str] = [
     if o.strip()
 ]
 
+# Claude Code usage data (JSONL files)
+CLAUDE_DATA_PATH: str = os.environ.get(
+    "CLAUDE_DATA_PATH", os.path.expanduser("~/.claude/projects")
+)
+
 # Telegram integration for session callbacks
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
