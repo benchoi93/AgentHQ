@@ -167,12 +167,20 @@ class TmuxBackend(SessionBackend):
             return False
         return self._tmux_alive(info["tmux_name"])
 
-    def _build_env(self, config_dir: str = "") -> dict[str, str] | None:
-        """Build env dict with CLAUDE_CONFIG_DIR if an account config_dir is set."""
+    @staticmethod
+    def _build_claude_cmd(config_dir: str = "") -> str | list[str]:
+        """Build the claude launch command, optionally with CLAUDE_CONFIG_DIR.
+
+        tmux new-session spawns its shell inside the tmux *server* process,
+        so setting env= on the subprocess.run() call only affects the short-
+        lived tmux client — NOT the session.  To inject an env var into the
+        session we wrap the command in a shell with an inline export.
+        """
+        base = "claude --dangerously-skip-permissions"
         if not config_dir:
-            return None
-        env = {**os.environ, "CLAUDE_CONFIG_DIR": config_dir}
-        return env
+            return ["claude", "--dangerously-skip-permissions"]
+        # Use shell form so tmux interprets it as a single command string
+        return f"CLAUDE_CONFIG_DIR={config_dir} {base}"
 
     def create_session(self, directory: str, name: str = "", config_dir: str = "") -> dict[str, Any]:
         from ..core import _session_id
@@ -206,11 +214,15 @@ class TmuxBackend(SessionBackend):
             return {"ok": True, "session_id": sid,
                     "message": f"Adopted existing tmux session '{tmux_name}'"}
         try:
+            claude_cmd = self._build_claude_cmd(config_dir)
+            cmd = ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory]
+            if isinstance(claude_cmd, list):
+                cmd.extend(claude_cmd)
+            else:
+                cmd.append(claude_cmd)
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
-                 "claude", "--dangerously-skip-permissions"],
+                cmd,
                 capture_output=True, text=True, timeout=10, check=True,
-                env=self._build_env(config_dir),
             )
             self._apply_tmux_defaults(tmux_name)
             self._auto_accept_trust(tmux_name)
@@ -258,11 +270,15 @@ class TmuxBackend(SessionBackend):
                 pass
 
         try:
+            claude_cmd = self._build_claude_cmd(config_dir)
+            cmd = ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory]
+            if isinstance(claude_cmd, list):
+                cmd.extend(claude_cmd)
+            else:
+                cmd.append(claude_cmd)
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
-                 "claude", "--dangerously-skip-permissions"],
+                cmd,
                 capture_output=True, text=True, timeout=10, check=True,
-                env=self._build_env(config_dir),
             )
             self._apply_tmux_defaults(tmux_name)
             self._auto_accept_trust(tmux_name)
