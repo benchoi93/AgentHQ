@@ -167,7 +167,14 @@ class TmuxBackend(SessionBackend):
             return False
         return self._tmux_alive(info["tmux_name"])
 
-    def create_session(self, directory: str, name: str = "") -> dict[str, Any]:
+    def _build_env(self, config_dir: str = "") -> dict[str, str] | None:
+        """Build env dict with CLAUDE_CONFIG_DIR if an account config_dir is set."""
+        if not config_dir:
+            return None
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": config_dir}
+        return env
+
+    def create_session(self, directory: str, name: str = "", config_dir: str = "") -> dict[str, Any]:
         from ..core import _session_id
 
         path = Path(directory)
@@ -193,6 +200,7 @@ class TmuxBackend(SessionBackend):
                 "project": project,
                 "path": directory,
                 "tmux_name": tmux_name,
+                "config_dir": config_dir,
             }
             self.save_sessions()
             return {"ok": True, "session_id": sid,
@@ -202,6 +210,7 @@ class TmuxBackend(SessionBackend):
                 ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
+                env=self._build_env(config_dir),
             )
             self._apply_tmux_defaults(tmux_name)
             self._auto_accept_trust(tmux_name)
@@ -209,15 +218,18 @@ class TmuxBackend(SessionBackend):
                 "project": project,
                 "path": directory,
                 "tmux_name": tmux_name,
+                "config_dir": config_dir,
             }
             self.save_sessions()
+            acct_msg = f" (account: {config_dir})" if config_dir else ""
             return {"ok": True, "session_id": sid,
-                    "message": f"tmux session '{tmux_name}' created"}
+                    "message": f"tmux session '{tmux_name}' created{acct_msg}"}
         except subprocess.CalledProcessError as exc:
             return {"ok": False, "error": f"tmux error: {exc.stderr}"}
 
     def restart_session(
         self, session_id: str, directory: str = "", name: str = "",
+        config_dir: str = "",
     ) -> dict[str, Any]:
         info = self.sessions.get(session_id)
 
@@ -225,6 +237,9 @@ class TmuxBackend(SessionBackend):
             tmux_name = info["tmux_name"]
             directory = info["path"]
             project = info["project"]
+            # Preserve account from previous session unless overridden
+            if not config_dir:
+                config_dir = info.get("config_dir", "")
         elif directory:
             project = name or Path(directory).name
             tmux_name = f"agenthq-{project}".replace(" ", "-").replace("/", "-")[:50]
@@ -247,6 +262,7 @@ class TmuxBackend(SessionBackend):
                 ["tmux", "new-session", "-d", "-s", tmux_name, "-c", directory,
                  "claude", "--dangerously-skip-permissions"],
                 capture_output=True, text=True, timeout=10, check=True,
+                env=self._build_env(config_dir),
             )
             self._apply_tmux_defaults(tmux_name)
             self._auto_accept_trust(tmux_name)
@@ -254,6 +270,7 @@ class TmuxBackend(SessionBackend):
                 "project": project,
                 "path": directory,
                 "tmux_name": tmux_name,
+                "config_dir": config_dir,
             }
             self.save_sessions()
             self.sessions_needing_restart.add(session_id)

@@ -94,6 +94,7 @@ class CreateSessionRequest(BaseModel):
     machine: str
     directory: str
     session_name: str = ""
+    account: str = ""  # account name from agent config (e.g. "cc", "cb")
 
 
 # --- Sync ---

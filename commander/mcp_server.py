@@ -370,7 +370,7 @@ async def send_to_session(session_id: str, message: str) -> str:
 
 
 @mcp.tool()
-async def create_session(machine: str, directory: str, session_name: str = "") -> str:
+async def create_session(machine: str, directory: str, session_name: str = "", account: str = "") -> str:
     """Create a new Claude Code session on a target machine.
 
     Queues a create_session command via the AgentHQ API. The agent on the
@@ -381,6 +381,8 @@ async def create_session(machine: str, directory: str, session_name: str = "") -
         machine: Target machine name (e.g. "cege-u-tol-gpu-02").
         directory: Absolute path to the project directory on the target machine.
         session_name: Optional display name (defaults to directory basename).
+        account: Account pool name (e.g. "cc" for $200, "cb" for $100).
+                 If empty, uses the agent's default_account from config.yaml.
     """
     url = f"{AGENTHQ_URL}/api/sessions/create"
     payload = {
@@ -388,6 +390,8 @@ async def create_session(machine: str, directory: str, session_name: str = "") -
         "directory": directory,
         "session_name": session_name,
     }
+    if account:
+        payload["account"] = account
 
     try:
         http = await _get_http()

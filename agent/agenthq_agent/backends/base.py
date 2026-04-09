@@ -27,8 +27,13 @@ class SessionBackend(ABC):
         self.sessions_needing_stop: set[str] = set()
 
     @abstractmethod
-    def create_session(self, directory: str, name: str = "") -> dict[str, Any]:
-        """Spawn a Claude Code session. Returns {"ok": bool, ...}."""
+    def create_session(self, directory: str, name: str = "", config_dir: str = "") -> dict[str, Any]:
+        """Spawn a Claude Code session. Returns {"ok": bool, ...}.
+
+        Args:
+            config_dir: If set, passed as CLAUDE_CONFIG_DIR env var to select
+                        which Claude account to use (e.g. "~/.claude-b").
+        """
 
     @abstractmethod
     def stop_session(self, session_id: str) -> dict[str, Any]:
@@ -37,6 +42,7 @@ class SessionBackend(ABC):
     @abstractmethod
     def restart_session(
         self, session_id: str, directory: str = "", name: str = "",
+        config_dir: str = "",
     ) -> dict[str, Any]:
         """Kill and relaunch a managed session. Returns {"ok": bool, ...}."""
 

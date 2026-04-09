@@ -63,10 +63,13 @@ async def create_session_cmd(
     agent = await store.get_agent_by_machine(req.machine)
     if not agent:
         raise HTTPException(status_code=404, detail="No agent found for that machine")
+    payload = {"directory": req.directory, "session_name": req.session_name}
+    if req.account:
+        payload["account"] = req.account
     cmd_id = await store.create_command(
         agent["id"],
         "create_session",
-        json.dumps({"directory": req.directory, "session_name": req.session_name}),
+        json.dumps(payload),
     )
     return {"ok": True, "command_id": cmd_id}
 

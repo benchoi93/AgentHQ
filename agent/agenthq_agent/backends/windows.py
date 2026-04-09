@@ -147,7 +147,7 @@ class WindowsBackend(SessionBackend):
     def is_session_alive(self, session_id: str) -> bool:
         return session_id in self.sessions
 
-    def create_session(self, directory: str, name: str = "") -> dict[str, Any]:
+    def create_session(self, directory: str, name: str = "", config_dir: str = "") -> dict[str, Any]:
         from ..core import _session_id
 
         directory = _to_win_path(directory)
@@ -174,6 +174,7 @@ class WindowsBackend(SessionBackend):
 
     def restart_session(
         self, session_id: str, directory: str = "", name: str = "",
+        config_dir: str = "",
     ) -> dict[str, Any]:
         info = self.sessions.get(session_id)
 

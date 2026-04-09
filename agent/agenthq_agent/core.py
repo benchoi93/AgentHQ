@@ -115,6 +115,26 @@ IS_WSL = _is_wsl()
 
 
 # ---------------------------------------------------------------------------
+# Account Pool
+# ---------------------------------------------------------------------------
+
+def _resolve_account(cfg: dict[str, Any], account: str) -> str:
+    """Resolve an account name to its config_dir path.
+
+    Falls back to default_account if no account specified,
+    or empty string if accounts aren't configured.
+    """
+    accounts = cfg.get("accounts", {})
+    if not accounts:
+        return ""
+    if not account:
+        account = cfg.get("default_account", "")
+    if account and account in accounts:
+        return accounts[account].get("config_dir", "")
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Session Discovery
 # ---------------------------------------------------------------------------
 
@@ -403,21 +423,27 @@ async def _handle_command(cfg: dict[str, Any], http: aiohttp.ClientSession, cmd:
         return
 
     if cmd_type == "create_session":
-        log.info("create_session: directory=%r name=%r", payload.get("directory"), payload.get("session_name"))
+        log.info("create_session: directory=%r name=%r account=%r",
+                 payload.get("directory"), payload.get("session_name"), payload.get("account"))
+        # Resolve account name → config_dir
+        config_dir = _resolve_account(cfg, payload.get("account", ""))
         result = await asyncio.to_thread(
             _backend.create_session,
             payload["directory"],
             payload.get("session_name", ""),
+            config_dir,
         )
         log.info("create_session result: %s", result)
         status = "completed" if result.get("ok") else "failed"
         await _report_command(cfg, http, cmd_id, status, json.dumps(result))
     elif cmd_type == "restart_session":
+        config_dir = _resolve_account(cfg, payload.get("account", ""))
         result = await asyncio.to_thread(
             _backend.restart_session,
             payload["session_id"],
             payload.get("directory", ""),
             payload.get("session_name", ""),
+            config_dir,
         )
         status = "completed" if result.get("ok") else "failed"
         await _report_command(cfg, http, cmd_id, status, json.dumps(result))
