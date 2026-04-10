@@ -97,6 +97,10 @@ class CreateSessionRequest(BaseModel):
     account: str = ""  # account name from agent config (e.g. "cc", "cb")
 
 
+class RestartSessionRequest(BaseModel):
+    account: str = ""  # optional account override (e.g. "cb" to switch accounts)
+
+
 # --- Sync ---
 
 class SyncFileEntry(BaseModel):

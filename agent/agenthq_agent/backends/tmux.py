@@ -61,6 +61,21 @@ class TmuxBackend(SessionBackend):
         except OSError as exc:
             log.debug("Failed to save managed sessions: %s", exc)
 
+    def backfill_config_dir(self, default_config_dir: str) -> int:
+        """Backfill config_dir for sessions that were created before account pool.
+
+        Returns the number of sessions updated.
+        """
+        updated = 0
+        for sid, info in self.sessions.items():
+            if not info.get("config_dir"):
+                info["config_dir"] = default_config_dir
+                updated += 1
+        if updated:
+            self.save_sessions()
+            log.info("Backfilled config_dir on %d session(s) → %s", updated, default_config_dir)
+        return updated
+
     # -----------------------------------------------------------------------
     # Tmux defaults for AgentHQ sessions
     # -----------------------------------------------------------------------
@@ -654,6 +669,30 @@ class TmuxBackend(SessionBackend):
             ws_url, ["tmux", "attach-session", "-t", pane],
             label, http, tmux_pane=pane,
         )
+
+    # -----------------------------------------------------------------------
+    # Terminal capture helpers
+    # -----------------------------------------------------------------------
+
+    def capture_last_lines(self, session_id: str, n: int = 50) -> str:
+        """Capture the last *n* lines from a session's tmux pane."""
+        info = self.sessions.get(session_id)
+        if not info:
+            return ""
+        tmux_name = info.get("tmux_name", "")
+        if not self._tmux_alive(tmux_name):
+            return ""
+        try:
+            proc = subprocess.run(
+                ["tmux", "capture-pane", "-t", tmux_name, "-p",
+                 "-S", f"-{n}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                return proc.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return ""
 
     # -----------------------------------------------------------------------
     # Idle management

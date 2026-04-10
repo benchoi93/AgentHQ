@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -1161,6 +1162,135 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
 
 
 # ---------------------------------------------------------------------------
+# Rate-Limit Detection & Account Switching
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate Claude Code hit a rate/usage limit.
+# Checked against the last ~50 lines of terminal output.
+_RATE_LIMIT_PATTERNS: list[re.Pattern] = [
+    re.compile(r"usage\s+limit", re.IGNORECASE),
+    re.compile(r"rate\s+limit", re.IGNORECASE),
+    re.compile(r"too\s+many\s+requests", re.IGNORECASE),
+    re.compile(r"429", re.IGNORECASE),
+    re.compile(r"capacity\s+(reached|exceeded)", re.IGNORECASE),
+    re.compile(r"out\s+of\s+(api\s+)?credits?", re.IGNORECASE),
+    re.compile(r"billing.*limit", re.IGNORECASE),
+    re.compile(r"exceeded.*quota", re.IGNORECASE),
+]
+
+# Track which sessions have already been switched to avoid restart loops.
+# Maps session_id → timestamp of last switch.
+_rate_limit_switched: dict[str, float] = {}
+
+# Cooldown: don't re-switch within this many seconds.
+_RATE_LIMIT_SWITCH_COOLDOWN = 300  # 5 minutes
+
+
+def _detect_rate_limit(text: str) -> str | None:
+    """Return the matching pattern string if rate-limit text is found, else None."""
+    for pat in _RATE_LIMIT_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _get_fallback_account(cfg: dict[str, Any], current_config_dir: str) -> tuple[str, str]:
+    """Return (account_name, config_dir) for the next account to try.
+
+    Cycles through accounts, skipping the current one.
+    Returns ("", "") if no alternative account is available.
+    """
+    accounts = cfg.get("accounts", {})
+    if len(accounts) < 2:
+        return ("", "")
+    for name, acct in accounts.items():
+        acct_dir = acct.get("config_dir", "")
+        if acct_dir and acct_dir != current_config_dir:
+            return (name, acct_dir)
+    return ("", "")
+
+
+async def rate_limit_watcher_loop(
+    cfg: dict[str, Any], http: aiohttp.ClientSession,
+) -> None:
+    """Periodically check sessions for rate-limit messages and switch accounts."""
+    check_interval = 30  # seconds
+
+    # Wait for backend to be ready
+    while _backend is None:
+        await asyncio.sleep(check_interval)
+
+    log.info("Rate-limit watcher started (interval=%ds, cooldown=%ds)",
+             check_interval, _RATE_LIMIT_SWITCH_COOLDOWN)
+
+    while True:
+        try:
+            now = time.time()
+
+            for sid, info in list(_backend.sessions.items()):
+                tmux_name = info.get("tmux_name", "")
+                if not _backend._tmux_alive(tmux_name):
+                    continue
+
+                # Skip if recently switched
+                last_switch = _rate_limit_switched.get(sid, 0.0)
+                if now - last_switch < _RATE_LIMIT_SWITCH_COOLDOWN:
+                    continue
+
+                # Capture last 50 lines
+                text = await asyncio.to_thread(
+                    _backend.capture_last_lines, sid, 50,
+                )
+                if not text:
+                    continue
+
+                match = _detect_rate_limit(text)
+                if not match:
+                    continue
+
+                # Rate limit detected — find fallback account
+                current_dir = info.get("config_dir", "")
+                fallback_name, fallback_dir = _get_fallback_account(cfg, current_dir)
+                if not fallback_dir:
+                    log.warning(
+                        "Rate limit detected in session %s (%s) [%s] but no fallback account available",
+                        sid, info.get("project", "?"), match,
+                    )
+                    _rate_limit_switched[sid] = now  # avoid spamming logs
+                    continue
+
+                project = info.get("project", "?")
+                log.info(
+                    "Rate limit detected in session %s (%s) [%s] — switching to account '%s'",
+                    sid, project, match, fallback_name,
+                )
+
+                # Restart the session with the fallback account
+                result = await asyncio.to_thread(
+                    _backend.restart_session, sid, "", "", fallback_dir,
+                )
+                if result.get("ok"):
+                    log.info(
+                        "Switched session %s (%s) to account '%s'",
+                        sid, project, fallback_name,
+                    )
+                else:
+                    log.warning(
+                        "Failed to switch session %s (%s) to '%s': %s",
+                        sid, project, fallback_name, result.get("error"),
+                    )
+                _rate_limit_switched[sid] = now
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Rate-limit watcher error: %s", exc, exc_info=True)
+
+        await asyncio.sleep(check_interval)
+
+
+# ---------------------------------------------------------------------------
 # Session Manager
 # ---------------------------------------------------------------------------
 
@@ -1448,6 +1578,11 @@ async def run(cfg: dict[str, Any]) -> None:
     _backend = get_backend(state_dir)
     _backend.load_sessions()
 
+    # Backfill config_dir for sessions created before account pool feature
+    default_config_dir = _resolve_account(cfg, cfg.get("default_account", ""))
+    if default_config_dir and hasattr(_backend, "backfill_config_dir"):
+        _backend.backfill_config_dir(default_config_dir)
+
     # Auto-create default sessions if configured
     for ds in cfg.get("default_sessions", []):
         ds_path = os.path.expanduser(ds["path"])
@@ -1489,4 +1624,5 @@ async def run(cfg: dict[str, Any]) -> None:
             resilient("git_sync", git_sync_loop, cfg, http),
             resilient("idle_manager", idle_manager_loop, cfg, http),
             resilient("usage_reporter", usage_reporter_loop, cfg, http),
+            resilient("rate_limit_watcher", rate_limit_watcher_loop, cfg, http),
         )

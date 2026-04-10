@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from server.auth import require_token
 from server.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from server.models import CreateSessionRequest, SessionDetail, SessionInfo
+from server.models import CreateSessionRequest, RestartSessionRequest, SessionDetail, SessionInfo
 from server import store
 from server.ws_manager import manager
 
@@ -100,19 +100,23 @@ async def delete_session(
 @router.post("/{session_id}/restart")
 async def restart_session(
     session_id: str,
+    req: RestartSessionRequest | None = None,
     _token: str = Depends(require_token),
 ):
     row = await store.get_session(session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    payload: dict = {
+        "session_id": session_id,
+        "directory": row.get("path", ""),
+        "session_name": row.get("project", ""),
+    }
+    if req and req.account:
+        payload["account"] = req.account
     cmd_id = await store.create_command(
         row["agent_id"],
         "restart_session",
-        json.dumps({
-            "session_id": session_id,
-            "directory": row.get("path", ""),
-            "session_name": row.get("project", ""),
-        }),
+        json.dumps(payload),
     )
     return {"ok": True, "command_id": cmd_id}
 
