@@ -278,10 +278,20 @@ def list_known_projects(cfg_dirs: list[str] | None = None) -> list[dict[str, Any
     return projects
 
 
+def _build_account_map(cfg: dict[str, Any]) -> dict[str, str]:
+    """Build config_dir → account name mapping from config."""
+    return {
+        acct.get("config_dir", ""): name
+        for name, acct in cfg.get("accounts", {}).items()
+        if acct.get("config_dir")
+    }
+
+
 def discover_all_sessions(
     extra: list[dict[str, Any]],
     extra_project_dirs: list[str] | None = None,
     backend: SessionBackend | None = None,
+    account_map: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover sessions: managed sessions (via backend) + config entries.
 
@@ -291,7 +301,7 @@ def discover_all_sessions(
     merged: dict[str, dict[str, Any]] = {}
     # Include managed sessions (created via UI)
     if backend is not None:
-        for s in backend.discover_managed_sessions():
+        for s in backend.discover_managed_sessions(account_map):
             merged[s["id"]] = s
     # Include extra sessions from config
     for ex in extra:
@@ -322,10 +332,11 @@ _session_compacted: dict[str, bool] = {}  # sid -> whether compacted since last 
 async def _discover_async(
     extra: list[dict[str, Any]],
     extra_project_dirs: list[str] | None = None,
+    account_map: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     global _cached_sessions
     sessions = await asyncio.to_thread(
-        discover_all_sessions, extra, extra_project_dirs, _backend,
+        discover_all_sessions, extra, extra_project_dirs, _backend, account_map,
     )
     async with _cache_lock:
         _cached_sessions = sessions
@@ -362,12 +373,14 @@ async def heartbeat_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) -> No
     url = cfg["server_url"].rstrip("/") + "/api/agents/heartbeat"
     headers = {"Authorization": f"Bearer {cfg['token']}"}
     interval = cfg["heartbeat_interval"]
+    account_map = _build_account_map(cfg)
 
     while True:
         try:
             sessions = await _discover_async(
                 cfg.get("extra_sessions", []),
                 cfg.get("extra_project_dirs"),
+                account_map,
             )
             # Refresh known projects in background (never blocks heartbeat)
             if time.time() - _known_projects_cache["ts"] >= _KNOWN_PROJECTS_TTL:
@@ -1182,8 +1195,22 @@ _RATE_LIMIT_PATTERNS: list[re.Pattern] = [
 # Maps session_id → timestamp of last switch.
 _rate_limit_switched: dict[str, float] = {}
 
-# Cooldown: don't re-switch within this many seconds.
+# Track which accounts are known rate-limited.
+# Maps config_dir → timestamp when rate limit was detected.
+_account_rate_limited: dict[str, float] = {}
+
+# Cooldown: don't re-switch a session within this many seconds.
 _RATE_LIMIT_SWITCH_COOLDOWN = 300  # 5 minutes
+
+# How long to consider an account rate-limited before retrying it.
+_ACCOUNT_RATE_LIMIT_TTL = 1800  # 30 minutes
+
+# Patterns that indicate Claude Code is stuck at an OAuth login prompt.
+_OAUTH_PROMPT_PATTERNS: list[re.Pattern] = [
+    re.compile(r"Paste code here if prompted", re.IGNORECASE),
+    re.compile(r"Use the url below to sign in", re.IGNORECASE),
+    re.compile(r"oauth/authorize\?", re.IGNORECASE),
+]
 
 
 def _detect_rate_limit(text: str) -> str | None:
@@ -1195,19 +1222,36 @@ def _detect_rate_limit(text: str) -> str | None:
     return None
 
 
-def _get_fallback_account(cfg: dict[str, Any], current_config_dir: str) -> tuple[str, str]:
+def _detect_oauth_prompt(text: str) -> str | None:
+    """Return the matching pattern string if an OAuth login prompt is found."""
+    for pat in _OAUTH_PROMPT_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _get_fallback_account(
+    cfg: dict[str, Any], current_config_dir: str,
+) -> tuple[str, str]:
     """Return (account_name, config_dir) for the next account to try.
 
-    Cycles through accounts, skipping the current one.
-    Returns ("", "") if no alternative account is available.
+    Skips the current account AND any account that is still within its
+    rate-limit TTL.  Returns ("", "") if no viable account is available.
     """
     accounts = cfg.get("accounts", {})
     if len(accounts) < 2:
         return ("", "")
+    now = time.time()
     for name, acct in accounts.items():
         acct_dir = acct.get("config_dir", "")
-        if acct_dir and acct_dir != current_config_dir:
-            return (name, acct_dir)
+        if not acct_dir or acct_dir == current_config_dir:
+            continue
+        # Skip accounts that are known to be rate-limited
+        limited_at = _account_rate_limited.get(acct_dir, 0.0)
+        if now - limited_at < _ACCOUNT_RATE_LIMIT_TTL:
+            continue
+        return (name, acct_dir)
     return ("", "")
 
 
@@ -1245,22 +1289,59 @@ async def rate_limit_watcher_loop(
                 if not text:
                     continue
 
+                current_dir = info.get("config_dir", "")
+                project = info.get("project", "?")
+
+                # --- OAuth prompt detection ---
+                oauth_match = _detect_oauth_prompt(text)
+                if oauth_match:
+                    log.warning(
+                        "OAuth prompt detected in session %s (%s) — account '%s' needs re-auth",
+                        sid, project, current_dir,
+                    )
+                    # Mark this account as unusable so we don't switch back to it
+                    _account_rate_limited[current_dir] = now
+                    fallback_name, fallback_dir = _get_fallback_account(cfg, current_dir)
+                    if fallback_dir:
+                        log.info(
+                            "Switching session %s (%s) away from OAuth-stuck account to '%s'",
+                            sid, project, fallback_name,
+                        )
+                        result = await asyncio.to_thread(
+                            _backend.restart_session, sid, "", "", fallback_dir,
+                        )
+                        if result.get("ok"):
+                            log.info("Switched session %s (%s) to account '%s'",
+                                     sid, project, fallback_name)
+                        else:
+                            log.warning("Failed to switch session %s (%s) to '%s': %s",
+                                        sid, project, fallback_name, result.get("error"))
+                    else:
+                        log.warning(
+                            "OAuth-stuck session %s (%s) — no viable fallback account",
+                            sid, project,
+                        )
+                    _rate_limit_switched[sid] = now
+                    continue
+
+                # --- Rate-limit detection ---
                 match = _detect_rate_limit(text)
                 if not match:
                     continue
 
-                # Rate limit detected — find fallback account
-                current_dir = info.get("config_dir", "")
+                # Mark the current account as rate-limited
+                _account_rate_limited[current_dir] = now
+
                 fallback_name, fallback_dir = _get_fallback_account(cfg, current_dir)
                 if not fallback_dir:
                     log.warning(
-                        "Rate limit detected in session %s (%s) [%s] but no fallback account available",
-                        sid, info.get("project", "?"), match,
+                        "Rate limit detected in session %s (%s) [%s] but no viable fallback "
+                        "(all accounts rate-limited)",
+                        sid, project, match,
                     )
-                    _rate_limit_switched[sid] = now  # avoid spamming logs
+                    _rate_limit_switched[sid] = now
                     continue
 
-                project = info.get("project", "?")
                 log.info(
                     "Rate limit detected in session %s (%s) [%s] — switching to account '%s'",
                     sid, project, match, fallback_name,

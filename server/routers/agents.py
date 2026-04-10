@@ -42,6 +42,7 @@ async def heartbeat(
         sessions.append({
             "id": sess.id, "project": sess.project, "status": sess.status,
             "pid": sess.pid, "path": sess.path, "last_activity": activity_str,
+            "account": sess.account,
         })
 
     # Prepare known projects

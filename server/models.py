@@ -16,6 +16,7 @@ class SessionPayload(BaseModel):
     pid: Optional[int] = None
     path: str = ""
     last_activity: Union[float, str] = Field(default_factory=time.time)
+    account: str = ""  # account name (e.g. "cc", "cb")
 
     @field_validator("last_activity", mode="before")
     @classmethod
@@ -66,6 +67,7 @@ class SessionInfo(BaseModel):
     path: str = ""
     last_activity: str = ""
     agent_version: Optional[str] = None
+    account: str = ""
 
 
 class SessionDetail(SessionInfo):

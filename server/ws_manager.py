@@ -131,6 +131,10 @@ class ConnectionManager:
     ) -> None:
         await ws.accept()
         if is_agent:
+            # Clear stale buffer before replacing — _replace_agent prevents
+            # the old disconnect handler from clearing it (by design), so we
+            # must do it here to avoid replaying old terminal state to clients.
+            self.terminal_buffer.pop(session_id, None)
             await self._replace_agent(self.terminal_agents, session_id, ws)
         else:
             # Replay buffered output so new client sees current terminal state

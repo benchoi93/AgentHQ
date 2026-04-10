@@ -73,10 +73,11 @@ export async function createSession(req: CreateSessionRequest): Promise<{ ok: bo
   return res.json();
 }
 
-export async function restartSession(id: string): Promise<void> {
+export async function restartSession(id: string, account?: string): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/sessions/${id}/restart`, {
     method: "POST",
-    headers: getHeaders(),
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
+    body: account ? JSON.stringify({ account }) : undefined,
   });
   if (res.status === 401) {
     localStorage.removeItem("agenthq_token");

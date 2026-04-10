@@ -300,6 +300,29 @@ export default function SessionDetail() {
                       </button>
                     </>
                   ) : null}
+                  {session.account && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (actionPending) return;
+                        const target = session.account === "cc" ? "cb" : "cc";
+                        setActionPending("switch");
+                        try {
+                          await restartSession(id!, target);
+                          setTimeout(() => { setReloadKey((k) => k + 1); setActionPending(null); }, 3000);
+                        } catch { setActionPending(null); }
+                      }}
+                      disabled={!!actionPending}
+                      title={`Switch to ${session.account === "cc" ? "cb" : "cc"} account`}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase cursor-pointer
+                                  transition-all hover:scale-110 disabled:opacity-50
+                                  ${session.account === "cc"
+                                    ? "bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25"
+                                    : "bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30 hover:bg-amber-500/25"
+                                  }`}>
+                      {actionPending === "switch" ? "..." : session.account}
+                    </button>
+                  )}
                   <span className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 text-[11px]">
                     {session.machine}
                   </span>
@@ -488,8 +511,19 @@ export default function SessionDetail() {
                   </button>
                 </div>
               ) : (
-                terminalIds.map((termId) => (
+                terminalIds.map((termId) => {
+                  const termSession = sessions.find(s => s.id === termId);
+                  return (
                   <div key={`pane-${termId}-${reloadKey}`} className="bg-slate-950 min-h-0 min-w-0 overflow-hidden relative">
+                    {termSession?.account && terminalIds.length > 1 && (
+                      <span className={`absolute top-1 left-1 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide uppercase
+                                       ${termSession.account === "cc"
+                                         ? "bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/30"
+                                         : "bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/30"
+                                       }`}>
+                        {termSession.account}
+                      </span>
+                    )}
                     {termId !== id && (
                       <button
                         onClick={() => handleDeleteTerminal(termId)}
@@ -504,7 +538,8 @@ export default function SessionDetail() {
                       <TerminalView wsUrl={getWsUrl(`/ws/terminal/${termId}`)} fontSize={termFontSize} />
                     </Suspense>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

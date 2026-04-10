@@ -25,6 +25,7 @@ export interface Session {
   model?: string;
   provider?: string;
   agent_version?: string;
+  account?: string;
 }
 
 export interface LogMessage {

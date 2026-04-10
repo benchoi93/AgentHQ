@@ -336,12 +336,20 @@ class TmuxBackend(SessionBackend):
     # Discovery
     # -----------------------------------------------------------------------
 
-    def discover_managed_sessions(self) -> list[dict[str, Any]]:
+    def discover_managed_sessions(self, account_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        """Return list of session dicts for the heartbeat.
+
+        *account_map*: mapping of config_dir → account name (e.g.
+        ``{"/home/user/.claude": "cc", "/home/user/.claude-b": "cb"}``).
+        """
         result = []
         for sid, info in self.sessions.items():
             tmux_name = info["tmux_name"]
             if self._tmux_alive(tmux_name):
                 status = "dead" if self._is_pane_dead(tmux_name) else "running"
+                account = ""
+                if account_map:
+                    account = account_map.get(info.get("config_dir", ""), "")
                 result.append({
                     "id": sid,
                     "project": info["project"],
@@ -349,6 +357,7 @@ class TmuxBackend(SessionBackend):
                     "pid": None,
                     "path": info["path"],
                     "last_activity": time.time(),
+                    "account": account,
                 })
         return result
 

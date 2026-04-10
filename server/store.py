@@ -115,6 +115,7 @@ async def get_db() -> aiosqlite.Connection:
         for migration in [
             "ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agents ADD COLUMN agent_version TEXT",
+            "ALTER TABLE sessions ADD COLUMN account TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 await _db.execute(migration)
@@ -405,19 +406,21 @@ async def batch_heartbeat(
     for sess in sessions:
         await db.execute(
             """
-            INSERT INTO sessions (id, agent_id, project, status, pid, path, last_activity)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions (id, agent_id, project, status, pid, path, last_activity, account)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 project = excluded.project,
                 status = excluded.status,
                 pid = excluded.pid,
                 path = excluded.path,
-                last_activity = excluded.last_activity
+                last_activity = excluded.last_activity,
+                account = excluded.account
             WHERE hidden = 0
             """,
             (sess["id"], agent_id, sess["project"], sess["status"],
-             sess["pid"], sess["path"], sess["last_activity"]),
+             sess["pid"], sess["path"], sess["last_activity"],
+             sess.get("account", "")),
         )
 
     # 3. Mark missing sessions offline

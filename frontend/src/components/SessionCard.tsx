@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Circle, Clock, FolderOpen, Trash2 } from "lucide-react";
 import type { Session } from "../types";
-import { deleteSession } from "../api";
+import { deleteSession, restartSession } from "../api";
 
 const STATUS_COLORS: Record<string, string> = {
   running: "text-status-running",
@@ -94,6 +94,26 @@ export default function SessionCard({ session, onDeleted }: SessionCardProps) {
 
       {/* Bottom row: metadata */}
       <div className="flex items-center gap-3 text-xs text-slate-500 mt-2">
+        {session.account && (
+          <button
+            onClick={async (e) => {
+              e.stopPropagation();
+              const target = session.account === "cc" ? "cb" : "cc";
+              try {
+                await restartSession(session.id, target);
+                setTimeout(() => onDeleted?.(), 3000);
+              } catch { /* ignore */ }
+            }}
+            title={`Switch to ${session.account === "cc" ? "cb" : "cc"} account`}
+            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase cursor-pointer
+                        transition-all hover:scale-110
+                        ${session.account === "cc"
+                          ? "bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25"
+                          : "bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30 hover:bg-amber-500/25"
+                        }`}>
+            {session.account}
+          </button>
+        )}
         {session.provider && (
           <span className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400">
             {session.provider}
