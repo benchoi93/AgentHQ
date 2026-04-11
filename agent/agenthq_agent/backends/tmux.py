@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -111,28 +112,64 @@ class TmuxBackend(SessionBackend):
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
-    @staticmethod
-    def _respawn_if_dead(tmux_name: str) -> bool:
+    def _respawn_if_dead(self, tmux_name: str) -> bool:
         """Check if a tmux pane is dead and respawn it if so.
 
         With remain-on-exit, dead panes show 'Pane is dead' but the session
-        stays alive. This respawns Claude Code in the same pane.
+        stays alive. This respawns Claude Code in the same pane, preserving
+        the session's CLAUDE_CONFIG_DIR for correct account credentials.
         Returns True if pane was respawned.
         """
         if not TmuxBackend._is_pane_dead(tmux_name):
             return False
+        # Look up config_dir for this session so respawn uses correct account
+        config_dir = ""
+        for info in self.sessions.values():
+            if info.get("tmux_name") == tmux_name:
+                config_dir = info.get("config_dir", "")
+                break
+        claude_cmd = self._build_claude_cmd(config_dir)
         try:
-            subprocess.run(
-                ["tmux", "respawn-pane", "-k", "-t", tmux_name,
-                 "claude", "--dangerously-skip-permissions"],
-                capture_output=True, timeout=5,
-            )
-            log.info("Respawned dead pane in '%s'", tmux_name)
+            cmd = ["tmux", "respawn-pane", "-k", "-t", tmux_name]
+            if isinstance(claude_cmd, list):
+                cmd.extend(claude_cmd)
+            else:
+                cmd.append(claude_cmd)
+            subprocess.run(cmd, capture_output=True, timeout=5)
+            log.info("Respawned dead pane in '%s' (config_dir=%s)",
+                     tmux_name, config_dir or "(default)")
             TmuxBackend._auto_accept_trust(tmux_name)
             return True
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
         return False
+
+    # Patterns that indicate we should NOT send Enter (OAuth/login prompts).
+    _UNSAFE_ENTER_PATTERNS = re.compile(
+        r"OAuth error|Select login method|Paste code here|"
+        r"oauth/authorize|sign in|Invalid code|"
+        r"Choose the text style|Let's get started",
+        re.IGNORECASE,
+    )
+    # Patterns where Enter is safe (trust dialogs, MCP confirmations).
+    _SAFE_ENTER_PATTERNS = re.compile(
+        r"trust this folder|Is this a project|"
+        r"MCP server|Enter to confirm|"
+        r"Do you want to trust",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _capture_pane(tmux_name: str, lines: int = 30) -> str:
+        """Capture last N lines from a tmux pane."""
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", tmux_name, "-p", "-S", f"-{lines}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout if result.returncode == 0 else ""
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return ""
 
     @staticmethod
     def _auto_accept_trust(tmux_name: str) -> None:
@@ -142,14 +179,26 @@ class TmuxBackend(SessionBackend):
         and when connecting to MCP servers for the first time.
         --dangerously-skip-permissions doesn't skip these dialogs, so we
         send Enter at multiple intervals to catch them reliably.
+
+        Before each Enter, captures the screen to avoid interacting with
+        OAuth/login prompts, which would cause 'Invalid code' errors.
         """
         import threading
 
         def _send_enter():
-            # Send Enter at 3s, 6s, and 10s to catch workspace trust,
+            # Check at 3s, 6s, and 10s to catch workspace trust,
             # MCP server trust, and other startup prompts.
             for delay in (3, 3, 4):
                 time.sleep(delay)
+                text = TmuxBackend._capture_pane(tmux_name, 30)
+                # Skip if screen shows OAuth/login/onboarding prompts
+                if TmuxBackend._UNSAFE_ENTER_PATTERNS.search(text):
+                    log.warning(
+                        "Skipping auto-accept Enter for '%s' — "
+                        "screen shows login/OAuth prompt",
+                        tmux_name,
+                    )
+                    continue
                 try:
                     subprocess.run(
                         ["tmux", "send-keys", "-t", tmux_name, "", "Enter"],

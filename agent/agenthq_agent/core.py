@@ -1179,12 +1179,14 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
 # ---------------------------------------------------------------------------
 
 # Patterns that indicate Claude Code hit a rate/usage limit.
-# Checked against the last ~50 lines of terminal output.
+# Checked against the last ~10 lines of terminal output (short window
+# to avoid matching stale messages that have scrolled up).
 _RATE_LIMIT_PATTERNS: list[re.Pattern] = [
-    re.compile(r"usage\s+limit", re.IGNORECASE),
-    re.compile(r"rate\s+limit", re.IGNORECASE),
+    re.compile(r"usage\s+limit\s+(reached|exceeded|hit)", re.IGNORECASE),
+    re.compile(r"rate\s+limit(ed)?", re.IGNORECASE),
     re.compile(r"too\s+many\s+requests", re.IGNORECASE),
-    re.compile(r"429", re.IGNORECASE),
+    re.compile(r"(error|status|HTTP)\s*429", re.IGNORECASE),
+    re.compile(r"429\s+(Too Many|rate)", re.IGNORECASE),
     re.compile(r"capacity\s+(reached|exceeded)", re.IGNORECASE),
     re.compile(r"out\s+of\s+(api\s+)?credits?", re.IGNORECASE),
     re.compile(r"billing.*limit", re.IGNORECASE),
@@ -1200,10 +1202,17 @@ _rate_limit_switched: dict[str, float] = {}
 _account_rate_limited: dict[str, float] = {}
 
 # Cooldown: don't re-switch a session within this many seconds.
-_RATE_LIMIT_SWITCH_COOLDOWN = 300  # 5 minutes
+_RATE_LIMIT_SWITCH_COOLDOWN = 600  # 10 minutes
 
 # How long to consider an account rate-limited before retrying it.
 _ACCOUNT_RATE_LIMIT_TTL = 1800  # 30 minutes
+
+# How many terminal lines to scan for rate-limit text.
+# Kept small to avoid matching stale messages in scrollback.
+_RATE_LIMIT_SCAN_LINES = 10
+
+# How often to check if sessions can return to the default account.
+_RETURN_TO_DEFAULT_INTERVAL = 1800  # 30 minutes
 
 # Patterns that indicate Claude Code is stuck at an OAuth login prompt.
 _OAUTH_PROMPT_PATTERNS: list[re.Pattern] = [
@@ -1255,22 +1264,74 @@ def _get_fallback_account(
     return ("", "")
 
 
+def _resolve_default_config_dir(cfg: dict[str, Any]) -> str:
+    """Return config_dir for the default_account, or "" if not configured."""
+    default_name = cfg.get("default_account", "")
+    if not default_name:
+        return ""
+    accounts = cfg.get("accounts", {})
+    acct = accounts.get(default_name, {})
+    return acct.get("config_dir", "")
+
+
 async def rate_limit_watcher_loop(
     cfg: dict[str, Any], http: aiohttp.ClientSession,
 ) -> None:
-    """Periodically check sessions for rate-limit messages and switch accounts."""
+    """Periodically check sessions for rate-limit messages and switch accounts.
+
+    Also returns sessions to the default account when rate limits clear.
+    """
     check_interval = 30  # seconds
+    last_return_check = 0.0  # timestamp of last "return to default" sweep
 
     # Wait for backend to be ready
     while _backend is None:
         await asyncio.sleep(check_interval)
 
-    log.info("Rate-limit watcher started (interval=%ds, cooldown=%ds)",
-             check_interval, _RATE_LIMIT_SWITCH_COOLDOWN)
+    log.info("Rate-limit watcher started (interval=%ds, cooldown=%ds, scan_lines=%d)",
+             check_interval, _RATE_LIMIT_SWITCH_COOLDOWN, _RATE_LIMIT_SCAN_LINES)
 
     while True:
         try:
             now = time.time()
+
+            # --- Return sessions to default account when rate limit clears ---
+            default_dir = _resolve_default_config_dir(cfg)
+            if (default_dir
+                    and now - last_return_check >= _RETURN_TO_DEFAULT_INTERVAL):
+                last_return_check = now
+                # Only return if default account is no longer rate-limited
+                default_limited_at = _account_rate_limited.get(default_dir, 0.0)
+                if now - default_limited_at >= _ACCOUNT_RATE_LIMIT_TTL:
+                    for sid, info in list(_backend.sessions.items()):
+                        current_dir = info.get("config_dir", "")
+                        if current_dir == default_dir:
+                            continue  # already on default
+                        if not current_dir:
+                            continue
+                        tmux_name = info.get("tmux_name", "")
+                        if not _backend._tmux_alive(tmux_name):
+                            continue
+                        # Don't return if recently switched (session might be
+                        # actively using the fallback account)
+                        last_switch = _rate_limit_switched.get(sid, 0.0)
+                        if now - last_switch < _RETURN_TO_DEFAULT_INTERVAL:
+                            continue
+                        project = info.get("project", "?")
+                        default_name = cfg.get("default_account", "?")
+                        log.info(
+                            "Returning session %s (%s) to default account '%s'",
+                            sid, project, default_name,
+                        )
+                        result = await asyncio.to_thread(
+                            _backend.restart_session, sid, "", "", default_dir,
+                        )
+                        if result.get("ok"):
+                            log.info("Returned session %s (%s) to '%s'",
+                                     sid, project, default_name)
+                        else:
+                            log.warning("Failed to return session %s to default: %s",
+                                        sid, result.get("error"))
 
             for sid, info in list(_backend.sessions.items()):
                 tmux_name = info.get("tmux_name", "")
@@ -1282,9 +1343,9 @@ async def rate_limit_watcher_loop(
                 if now - last_switch < _RATE_LIMIT_SWITCH_COOLDOWN:
                     continue
 
-                # Capture last 50 lines
+                # Capture only the last few lines to avoid stale matches
                 text = await asyncio.to_thread(
-                    _backend.capture_last_lines, sid, 50,
+                    _backend.capture_last_lines, sid, _RATE_LIMIT_SCAN_LINES,
                 )
                 if not text:
                     continue
@@ -1292,8 +1353,11 @@ async def rate_limit_watcher_loop(
                 current_dir = info.get("config_dir", "")
                 project = info.get("project", "?")
 
-                # --- OAuth prompt detection ---
-                oauth_match = _detect_oauth_prompt(text)
+                # --- OAuth prompt detection (use wider scan for login screens) ---
+                oauth_text = await asyncio.to_thread(
+                    _backend.capture_last_lines, sid, 30,
+                )
+                oauth_match = _detect_oauth_prompt(oauth_text) if oauth_text else None
                 if oauth_match:
                     log.warning(
                         "OAuth prompt detected in session %s (%s) — account '%s' needs re-auth",
