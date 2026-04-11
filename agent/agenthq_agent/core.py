@@ -1183,13 +1183,16 @@ async def idle_manager_loop(cfg: dict[str, Any], http: aiohttp.ClientSession) ->
 # to avoid matching stale messages that have scrolled up).
 _RATE_LIMIT_PATTERNS: list[re.Pattern] = [
     re.compile(r"usage\s+limit\s+(reached|exceeded|hit)", re.IGNORECASE),
-    re.compile(r"rate\s+limit(ed)?", re.IGNORECASE),
+    # "rate limited" (past tense) or "rate limit" + error verb — avoids
+    # matching informational text like "rate limit info" or discussions.
+    re.compile(r"rate\s+limited", re.IGNORECASE),
+    re.compile(r"rate\s+limit\s+(reached|exceeded|hit|error)", re.IGNORECASE),
     re.compile(r"too\s+many\s+requests", re.IGNORECASE),
     re.compile(r"(error|status|HTTP)\s*429", re.IGNORECASE),
     re.compile(r"429\s+(Too Many|rate)", re.IGNORECASE),
     re.compile(r"capacity\s+(reached|exceeded)", re.IGNORECASE),
     re.compile(r"out\s+of\s+(api\s+)?credits?", re.IGNORECASE),
-    re.compile(r"billing.*limit", re.IGNORECASE),
+    re.compile(r"billing.*limit\s+(reached|exceeded|hit)", re.IGNORECASE),
     re.compile(r"exceeded.*quota", re.IGNORECASE),
 ]
 
@@ -1309,6 +1312,8 @@ async def rate_limit_watcher_loop(
                             continue  # already on default
                         if not current_dir:
                             continue
+                        if info.get("no_auto_switch"):
+                            continue
                         tmux_name = info.get("tmux_name", "")
                         if not _backend._tmux_alive(tmux_name):
                             continue
@@ -1336,6 +1341,10 @@ async def rate_limit_watcher_loop(
             for sid, info in list(_backend.sessions.items()):
                 tmux_name = info.get("tmux_name", "")
                 if not _backend._tmux_alive(tmux_name):
+                    continue
+
+                # Skip sessions that opted out of auto-switching
+                if info.get("no_auto_switch"):
                     continue
 
                 # Skip if recently switched
