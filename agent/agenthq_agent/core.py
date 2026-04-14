@@ -68,6 +68,7 @@ def load_config(cli_args: argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("sync_enabled", True)
     cfg.setdefault("auto_compact_idle_minutes", 30)   # 0 to disable
     cfg.setdefault("auto_clear_idle_minutes", 300)     # 5hr, 0 to disable
+    cfg.setdefault("rate_limit_watcher_enabled", False)  # auto cc→cb switching
     # Track config dir for state file storage
     if cli_args.config and Path(cli_args.config).exists():
         cfg["_config_dir"] = str(Path(cli_args.config).resolve().parent)
@@ -1284,6 +1285,9 @@ async def rate_limit_watcher_loop(
 
     Also returns sessions to the default account when rate limits clear.
     """
+    if not cfg.get("rate_limit_watcher_enabled", False):
+        log.info("Rate-limit watcher disabled by config (rate_limit_watcher_enabled=false)")
+        return
     check_interval = 30  # seconds
     last_return_check = 0.0  # timestamp of last "return to default" sweep
 
