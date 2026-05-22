@@ -261,6 +261,12 @@ def list_known_projects(cfg_dirs: list[str] | None = None) -> list[dict[str, Any
             name, project_path = _decode_claude_project_dir(entry)
             if not name or name.startswith("."):
                 continue
+            # Skip stale entries whose directory no longer exists (e.g. after a
+            # reorg the .claude/projects history still encodes old paths). Dead
+            # paths would surface as "+" suggestions that fail with "Directory
+            # not found".
+            if not Path(project_path).is_dir():
+                continue
             sid = _session_id(project_path)
             if sid in seen:
                 continue
