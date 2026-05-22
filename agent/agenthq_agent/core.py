@@ -450,6 +450,8 @@ async def _handle_command(cfg: dict[str, Any], http: aiohttp.ClientSession, cmd:
         )
         log.info("create_session result: %s", result)
         status = "completed" if result.get("ok") else "failed"
+        if result.get("ok"):
+            await _unhide_session(cfg, http, result.get("session_id", ""))
         await _report_command(cfg, http, cmd_id, status, json.dumps(result))
     elif cmd_type == "restart_session":
         config_dir = _resolve_account(cfg, payload.get("account", ""))
@@ -461,6 +463,8 @@ async def _handle_command(cfg: dict[str, Any], http: aiohttp.ClientSession, cmd:
             config_dir,
         )
         status = "completed" if result.get("ok") else "failed"
+        if result.get("ok"):
+            await _unhide_session(cfg, http, result.get("session_id", ""))
         await _report_command(cfg, http, cmd_id, status, json.dumps(result))
     elif cmd_type == "stop_session":
         result = await asyncio.to_thread(
@@ -508,6 +512,30 @@ async def _report_command(
                 log.warning("Failed to report command %d result: %d", cmd_id, resp.status)
     except (aiohttp.ClientError, asyncio.TimeoutError):
         log.warning("Failed to report command %d result", cmd_id)
+
+
+async def _unhide_session(
+    cfg: dict[str, Any], http: aiohttp.ClientSession, session_id: str,
+) -> None:
+    """Clear a server-side soft-delete (hidden flag) for a session.
+
+    Session ids are deterministic (``sha256(node:path)``), so a recreated
+    session reuses the id of a previously deleted one. The heartbeat upsert
+    skips hidden rows (``ON CONFLICT(id) DO UPDATE ... WHERE hidden = 0``), so a
+    session the agent just (re)created would stay invisible forever. Whenever
+    the agent explicitly creates a session, un-hide it. A 404 simply means the
+    server has never seen this id yet — the next heartbeat will add it.
+    """
+    if not session_id:
+        return
+    url = cfg["server_url"].rstrip("/") + f"/api/sessions/{session_id}/unhide"
+    headers = {"Authorization": f"Bearer {cfg['token']}"}
+    try:
+        async with http.post(url, headers=headers) as resp:
+            if resp.status not in (200, 404):
+                log.warning("Failed to un-hide session %s: %d", session_id, resp.status)
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        log.warning("Failed to un-hide session %s", session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1741,7 +1769,10 @@ async def run(cfg: dict[str, Any]) -> None:
     if default_config_dir and hasattr(_backend, "backfill_config_dir"):
         _backend.backfill_config_dir(default_config_dir)
 
-    # Auto-create default sessions if configured
+    # Auto-create default sessions if configured. Track the ids we create so we
+    # can un-hide them once the HTTP session is up (a previously deleted default
+    # session reuses the same deterministic id and would otherwise stay hidden).
+    created_default_sids: list[str] = []
     for ds in cfg.get("default_sessions", []):
         ds_path = os.path.expanduser(ds["path"])
         ds_name = ds.get("name", Path(ds_path).name)
@@ -1753,6 +1784,8 @@ async def run(cfg: dict[str, Any]) -> None:
             result = _backend.create_session(ds_path, ds_name)
             if result.get("ok"):
                 log.info("Auto-created default session '%s' at %s", ds_name, ds_path)
+                if result.get("session_id"):
+                    created_default_sids.append(result["session_id"])
             else:
                 log.warning("Failed to auto-create default session '%s': %s", ds_name, result.get("error"))
 
@@ -1775,6 +1808,10 @@ async def run(cfg: dict[str, Any]) -> None:
                 await asyncio.sleep(5)
 
     async with aiohttp.ClientSession() as http:
+        # Un-hide any default sessions we just (re)created so a prior soft-delete
+        # doesn't keep them invisible.
+        for sid in created_default_sids:
+            await _unhide_session(cfg, http, sid)
         await asyncio.gather(
             resilient("heartbeat", heartbeat_loop, cfg, http),
             resilient("session_manager", session_manager, cfg, http),

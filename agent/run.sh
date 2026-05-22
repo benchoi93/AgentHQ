@@ -7,11 +7,29 @@ CONFIG="${SCRIPT_DIR}/config.yaml"
 LOG="${SCRIPT_DIR}/agent.log"
 PIDFILE="${SCRIPT_DIR}/.agent.pid"
 
+ensure_tmux() {
+    # The tmux backend is useless without the tmux binary. On ephemeral pods
+    # (e.g. VESSL workspaces) a restart can come up without it, leaving the
+    # agent unable to create or discover any session. Self-heal idempotently.
+    command -v tmux >/dev/null 2>&1 && return 0
+    echo "tmux not found — attempting install..."
+    if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y tmux >/dev/null 2>&1 \
+            || { apt-get update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y tmux >/dev/null 2>&1; }
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache tmux >/dev/null 2>&1
+    fi
+    command -v tmux >/dev/null 2>&1 \
+        && echo "tmux installed: $(tmux -V)" \
+        || echo "WARNING: tmux still missing — sessions will not work on this host"
+}
+
 start() {
     if running; then
         echo "Agent already running (PID $(cat "$PIDFILE"))"
         return 1
     fi
+    ensure_tmux
     echo "Starting AgentHQ agent..."
     nohup python3 "${SCRIPT_DIR}/agenthq_agent.py" --config "$CONFIG" >> "$LOG" 2>&1 &
     echo $! > "$PIDFILE"
