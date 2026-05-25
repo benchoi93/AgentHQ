@@ -237,6 +237,34 @@ async def get_session(session_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+async def get_session_by_id_or_name(identifier: str) -> Optional[dict]:
+    """Resolve a session by exact id, falling back to project name.
+
+    Session callbacks auto-detect their identity from the tmux session name
+    (i.e. the project), not the hex id, so the report endpoint must accept
+    either. For a name match, prefer a visible, running, most-recently-active
+    session so duplicate project names across machines resolve sensibly.
+    """
+    row = await get_session(identifier)
+    if row is not None:
+        return row
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT s.*, a.name AS agent_name, a.machine, a.agent_version
+        FROM sessions s
+        JOIN agents a ON s.agent_id = a.id
+        WHERE s.hidden = 0 AND LOWER(s.project) = LOWER(?)
+        ORDER BY CASE WHEN s.status = 'running' THEN 0 ELSE 1 END,
+                 s.last_activity DESC
+        LIMIT 1
+        """,
+        (identifier,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def delete_session(session_id: str) -> bool:
     """Hide a session (soft-delete). It won't reappear from heartbeat upserts."""
     db = await get_db()

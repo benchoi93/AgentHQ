@@ -168,15 +168,18 @@ async def session_report(
     Sessions call this endpoint to push events to the commander.
     The server stores the callback and sends a Telegram notification.
     """
-    row = await store.get_session(session_id)
+    # Sessions auto-detect their identity from the tmux name (the project),
+    # not the hex id, so accept either — see get_session_by_id_or_name.
+    row = await store.get_session_by_id_or_name(session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
     project = row.get("project", session_id)
+    canonical_id = row.get("id", session_id)
 
-    # Store in DB
+    # Store in DB (under the canonical hex id, not the name the caller used)
     cb_id = await store.create_callback(
-        session_id=session_id,
+        session_id=canonical_id,
         project=project,
         event_type=report.event_type,
         status=report.status,
@@ -225,6 +228,16 @@ async def _send_telegram(message: str) -> bool:
     except Exception as e:
         logger.error(f"Telegram send failed: {e}")
         return False
+
+
+@router.get("/{session_id}/terminal-text")
+async def get_terminal_text(
+    session_id: str,
+    _token: str = Depends(require_token),
+):
+    """Return recent terminal output as plain text (ANSI stripped)."""
+    text = manager.get_terminal_text(session_id)
+    return {"text": text}
 
 
 @router.post("/{session_id}/unhide")

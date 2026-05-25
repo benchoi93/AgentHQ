@@ -238,6 +238,27 @@ class ConnectionManager:
         for ws in dead:
             self.relay_clients[session_id].discard(ws)
 
+    # --- Terminal text extraction ---
+
+    def get_terminal_text(self, session_id: str) -> str:
+        """Return buffered terminal output as plain text (ANSI stripped)."""
+        import base64, re
+        buf = self.terminal_buffer.get(session_id)
+        if not buf:
+            return ""
+        raw_parts: list[str] = []
+        for msg in buf:
+            b64 = msg.get("data", "")
+            if not b64:
+                continue
+            try:
+                raw_parts.append(base64.b64decode(b64).decode("utf-8", errors="replace"))
+            except Exception:
+                continue
+        raw = "".join(raw_parts)
+        # Strip ANSI escape sequences
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?[a-zA-Z]", "", raw)
+
     # --- Activity detection ---
 
     def get_activity_status(self) -> dict[str, dict[str, Any]]:

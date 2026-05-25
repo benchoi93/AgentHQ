@@ -85,7 +85,12 @@ class TmuxBackend(SessionBackend):
     def _apply_tmux_defaults(tmux_name: str) -> None:
         """Apply AgentHQ defaults to a tmux session: mouse, scrollback, etc."""
         for cmd in [
-            ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
+            # mouse OFF on purpose: Claude Code renders in the normal buffer,
+            # so its output flows into scrollback. With mouse on, tmux makes the
+            # outer terminal (xterm.js) forward wheel/touch as mouse events into
+            # tmux copy-mode, which is janky over the websocket and breaks touch
+            # scrolling on mobile. Off lets xterm.js scroll its own buffer natively.
+            ["tmux", "set-option", "-t", tmux_name, "mouse", "off"],
             ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "on"],
             ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
             # Keep pane alive when Claude exits — prevents session death cycle.
@@ -493,38 +498,41 @@ class TmuxBackend(SessionBackend):
         pane = self.ensure_pane(session)
         if not pane:
             return None
+        # Always deliver via tmux buffer + bracketed paste, then a SEPARATE
+        # Enter — never `send-keys content Enter` as one burst. Claude Code's
+        # TUI auto-detects a fast multi-char burst as a paste and buffers it,
+        # absorbing the trailing Enter; the text then gets stuck in the input
+        # box, unsubmitted (observed with long single-line messages AND
+        # multi-line / coalesced Telegram messages — only very short bursts
+        # happened to submit, by staying under the paste-detection threshold).
+        # paste-buffer -p emits proper bracketed-paste markers so the TUI
+        # closes the paste, and the standalone Enter (after a short render
+        # delay) submits cleanly regardless of length or newlines.
+        import os
+        import tempfile
         try:
-            if len(content) > 500:
-                # For long messages, use tmux load-buffer + paste-buffer
-                # to avoid shell argument length limits and send-keys issues.
-                import tempfile
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", delete=False
-                ) as f:
-                    f.write(content)
-                    tmp_path = f.name
-                try:
-                    subprocess.run(
-                        ["tmux", "load-buffer", tmp_path],
-                        capture_output=True, timeout=5,
-                    )
-                    subprocess.run(
-                        ["tmux", "paste-buffer", "-t", pane],
-                        capture_output=True, timeout=5,
-                    )
-                    # Send Enter to submit the pasted text
-                    subprocess.run(
-                        ["tmux", "send-keys", "-t", pane, "", "Enter"],
-                        capture_output=True, timeout=5,
-                    )
-                finally:
-                    import os
-                    os.unlink(tmp_path)
-            else:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            ) as f:
+                f.write(content)
+                tmp_path = f.name
+            try:
                 subprocess.run(
-                    ["tmux", "send-keys", "-t", pane, content, "Enter"],
+                    ["tmux", "load-buffer", tmp_path],
                     capture_output=True, timeout=5,
                 )
+                subprocess.run(
+                    ["tmux", "paste-buffer", "-p", "-t", pane],
+                    capture_output=True, timeout=5,
+                )
+                # Let the TUI render the paste before the standalone submit.
+                time.sleep(0.15)
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", pane, "Enter"],
+                    capture_output=True, timeout=5,
+                )
+            finally:
+                os.unlink(tmp_path)
             return f"[sent to tmux:{pane}]"
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             return f"tmux error: {exc}"
@@ -704,7 +712,9 @@ class TmuxBackend(SessionBackend):
         # size instead of the smallest, then attach.
         for cmd in [
             ["tmux", "set-option", "-t", pane, "window-size", "latest"],
-            ["tmux", "set-option", "-t", pane, "mouse", "on"],
+            # mouse OFF so xterm.js handles wheel/touch scrolling natively from
+            # its own scrollback (see _apply_tmux_defaults for the full rationale).
+            ["tmux", "set-option", "-t", pane, "mouse", "off"],
             ["tmux", "set-window-option", "-t", pane, "alternate-screen", "on"],
             ["tmux", "set-option", "-t", pane, "history-limit", "50000"],
         ]:
