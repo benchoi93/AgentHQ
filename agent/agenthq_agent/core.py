@@ -1312,6 +1312,77 @@ def _resolve_default_config_dir(cfg: dict[str, Any]) -> str:
     return acct.get("config_dir", "")
 
 
+async def token_refresh_loop(
+    cfg: dict[str, Any], http: aiohttp.ClientSession,
+) -> None:
+    """Keep OAuth tokens fresh for all configured accounts.
+
+    Claude Code OAuth access tokens expire ~24h. Running `claude auth status`
+    triggers a silent refresh via the refresh token (no browser needed).
+    This loop checks token expiry every 30 min and refreshes when < 2h remain.
+    """
+    accounts = cfg.get("accounts", {})
+    if not accounts:
+        log.info("Token refresh: no accounts configured, skipping")
+        return
+
+    check_interval = 1800  # 30 min
+    refresh_threshold = 7200  # refresh when < 2h remain
+
+    await asyncio.sleep(30)  # let other loops start first
+
+    while True:
+        for name, acct in accounts.items():
+            config_dir = acct.get("config_dir", "")
+            if not config_dir:
+                continue
+            creds_path = os.path.join(os.path.expanduser(config_dir),
+                                      ".credentials.json")
+            try:
+                with open(creds_path) as f:
+                    creds = json.load(f)
+                expires_at = creds.get("claudeAiOauth", {}).get("expiresAt", 0)
+                remaining = (expires_at / 1000) - time.time()
+                if remaining > refresh_threshold:
+                    log.debug("Token %s: %.0fh remaining, OK", name, remaining / 3600)
+                    continue
+                log.info("Token %s: %.0fm remaining, refreshing...",
+                         name, remaining / 60)
+                env = os.environ.copy()
+                env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(config_dir)
+                # Use `claude -p` with haiku to trigger OAuth refresh.
+                # `claude auth status` does NOT refresh; only API calls do.
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["claude", "-p", ".", "--max-turns", "1",
+                         "--model", "haiku"],
+                        env=env, capture_output=True, text=True, timeout=60,
+                    ),
+                )
+                if result.returncode == 0:
+                    # Verify the token was actually refreshed
+                    with open(creds_path) as f:
+                        new_creds = json.load(f)
+                    new_exp = new_creds.get("claudeAiOauth", {}).get("expiresAt", 0)
+                    if new_exp > expires_at:
+                        log.info("Token %s refreshed, new expiry: %s",
+                                 name, time.strftime("%Y-%m-%d %H:%M",
+                                                     time.localtime(new_exp / 1000)))
+                    else:
+                        log.warning("Token %s: auth status succeeded but "
+                                    "expiry unchanged", name)
+                else:
+                    log.warning("Token %s refresh failed: %s",
+                                name, result.stderr[:200])
+            except FileNotFoundError:
+                log.debug("Token %s: no credentials file at %s", name, creds_path)
+            except Exception as exc:
+                log.warning("Token %s refresh error: %s", name, exc)
+
+        await asyncio.sleep(check_interval)
+
+
 async def rate_limit_watcher_loop(
     cfg: dict[str, Any], http: aiohttp.ClientSession,
 ) -> None:
@@ -1826,4 +1897,5 @@ async def run(cfg: dict[str, Any]) -> None:
             resilient("idle_manager", idle_manager_loop, cfg, http),
             resilient("usage_reporter", usage_reporter_loop, cfg, http),
             resilient("rate_limit_watcher", rate_limit_watcher_loop, cfg, http),
+            resilient("token_refresh", token_refresh_loop, cfg, http),
         )
