@@ -1,9 +1,33 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Send, ChevronUp, ChevronDown } from "lucide-react";
+import { Send, ChevronUp, ChevronDown, ChevronsDown } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useTerminalWebSocket } from "../hooks/useTerminalWebSocket";
+
+/**
+ * Copy text to clipboard with HTTP fallback.
+ * navigator.clipboard requires HTTPS; on plain HTTP we fall back
+ * to the legacy execCommand('copy') via a temporary textarea.
+ */
+function copyToClipboard(text: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => copyFallback(text));
+  } else {
+    copyFallback(text);
+  }
+}
+
+function copyFallback(text: string): void {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
 
 interface TerminalViewProps {
   wsUrl: string | null;
@@ -20,6 +44,23 @@ function isTerminalResponse(data: string): boolean {
 
 // Detect touch device (mobile/tablet)
 const IS_TOUCH = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+
+// Mobile quick-keys: TUIs (Claude Code, fzf, vim selectors) all accept these
+// escape sequences. Sent verbatim via sendInput() to the PTY, identical to
+// what xterm.js emits when the physical key is pressed on desktop.
+const QUICK_KEYS: ReadonlyArray<{ label: string; send: string; title: string }> = [
+  { label: "1", send: "1", title: "Select 1" },
+  { label: "2", send: "2", title: "Select 2" },
+  { label: "3", send: "3", title: "Select 3" },
+  { label: "4", send: "4", title: "Select 4" },
+  { label: "5", send: "5", title: "Select 5" },
+  { label: "↑", send: "\x1b[A", title: "Arrow up" },
+  { label: "↓", send: "\x1b[B", title: "Arrow down" },
+  { label: "⇥", send: "\t", title: "Tab" },
+  { label: "⏎", send: "\r", title: "Enter" },
+  { label: "Esc", send: "\x1b", title: "Escape" },
+  { label: "^C", send: "\x03", title: "Ctrl+C (interrupt)" },
+];
 
 export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -148,14 +189,31 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     // the browser fire the native paste event on xterm's internal textarea,
     // which xterm handles with proper bracketed-paste wrapping (\e[200~…\e[201~).
     terminal.attachCustomKeyEventHandler((event) => {
-      if (
-        event.type === "keydown" &&
-        event.key === "v" &&
-        (event.ctrlKey || event.metaKey) &&
-        !event.shiftKey
-      ) {
+      if (event.type !== "keydown" || event.shiftKey) return true;
+
+      // Let browser-level shortcuts pass through instead of going to PTY
+      if ((event.ctrlKey || event.metaKey) && ["r", "t", "w", "l", "n"].includes(event.key)) {
         return false;
       }
+
+      // Ctrl+C / Cmd+C: copy selected text to clipboard instead of
+      // sending \x03 (SIGINT) to the PTY.  When nothing is selected,
+      // fall through so the terminal receives SIGINT as usual.
+      if (
+        event.key === "c" &&
+        (event.ctrlKey || event.metaKey) &&
+        terminal.hasSelection()
+      ) {
+        copyToClipboard(terminal.getSelection());
+        return false;
+      }
+
+      // Ctrl+V / Cmd+V: let the browser fire the native paste event
+      // on xterm's internal textarea instead of sending \x16 to the PTY.
+      if (event.key === "v" && (event.ctrlKey || event.metaKey)) {
+        return false;
+      }
+
       return true;
     });
 
@@ -177,6 +235,7 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
       // restarts at 80x24 but cols/rows haven't changed client-side.
       lastSizeRef.current = { cols: 0, rows: 0 };
       fitAndResize();
+      terminalRef.current.focus();
       // Re-fit after a short delay to catch late CSS layout changes
       const timer = setTimeout(() => {
         fitAndResize();
@@ -199,12 +258,54 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     setTimeout(() => mobileInputRef.current?.focus(), 50);
   }, [mobileInput, sendInput]);
 
+  // Page-scroll the xterm buffer. Operates directly on xterm's internal
+  // viewport offset, so it works even when wheel/touch events are captured
+  // elsewhere (or when the native scrollbar refuses to render).
+  const scrollPage = useCallback((dir: "up" | "down" | "bottom") => {
+    const t = terminalRef.current;
+    if (!t) return;
+    if (dir === "bottom") { t.scrollToBottom(); return; }
+    const lines = Math.max(1, t.rows - 2);
+    t.scrollLines(dir === "up" ? -lines : lines);
+  }, []);
+
   return (
     <div className="h-full relative flex flex-col">
       <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden" />
       {!connected && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60">
           <p className="text-slate-500 text-sm italic">Connecting to terminal...</p>
+        </div>
+      )}
+      {/* Scroll controls — visible affordance for scrolling the xterm buffer.
+          Calls xterm's scrollLines() directly so it works regardless of
+          wheel/touch capture or whether the native scrollbar is visible. */}
+      {connected && (
+        <div className="absolute top-2 right-2 z-10 flex flex-col gap-1">
+          <button
+            onClick={() => scrollPage("up")}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700/50 text-slate-400
+                       hover:bg-slate-700 hover:text-slate-200 active:bg-slate-600 transition-colors"
+            title="Scroll up"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => scrollPage("down")}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700/50 text-slate-400
+                       hover:bg-slate-700 hover:text-slate-200 active:bg-slate-600 transition-colors"
+            title="Scroll down"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => scrollPage("bottom")}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700/50 text-slate-400
+                       hover:bg-slate-700 hover:text-slate-200 active:bg-slate-600 transition-colors"
+            title="Jump to bottom"
+          >
+            <ChevronsDown className="w-4 h-4" />
+          </button>
         </div>
       )}
       {/* Mobile input bar — toggle button + text input for paste */}
@@ -221,9 +322,28 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
             </button>
           )}
           {inputBarOpen && (
+            <div className="flex-shrink-0 flex flex-col bg-slate-900 border-t border-slate-700">
+              {/* Quick-keys strip — tap to send single keystrokes / escape
+                  sequences to the PTY without opening the on-screen keyboard.
+                  Horizontally scrollable so phones <360px wide still fit. */}
+              <div className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto border-b border-slate-800">
+                {QUICK_KEYS.map((k) => (
+                  <button
+                    key={k.label}
+                    type="button"
+                    onClick={() => sendInput(k.send)}
+                    title={k.title}
+                    className="flex-shrink-0 min-w-[36px] px-2.5 py-1.5 rounded
+                               bg-slate-800 border border-slate-700 text-slate-200 text-sm
+                               active:bg-slate-700 active:text-white transition-colors"
+                  >
+                    {k.label}
+                  </button>
+                ))}
+              </div>
             <form
               onSubmit={handleMobileSubmit}
-              className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-slate-900 border-t border-slate-700"
+              className="flex items-center gap-1.5 px-2 py-1.5"
             >
               <button
                 type="button"
@@ -259,6 +379,7 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
                 <Send className="w-4 h-4" />
               </button>
             </form>
+            </div>
           )}
         </>
       )}

@@ -35,10 +35,31 @@ body {
   width: 100% !important;
 }
 
-/* Fix touch scrolling in xterm.js on iOS Safari */
+/* Fix touch scrolling in xterm.js on iOS Safari.
+   Always-visible custom scrollbar — native overlay scrollbars (macOS,
+   iOS, GNOME) auto-hide, which makes scrolling feel broken even though
+   wheel/touch events do scroll the viewport. */
 .xterm-viewport {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #0a0e1a;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  -webkit-appearance: none;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: #0a0e1a;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+  min-height: 30px;
+  border: 2px solid #0a0e1a;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
 }
 
 /* Prevent iOS page bounce when scrolling inside terminal */
