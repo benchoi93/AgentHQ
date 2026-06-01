@@ -12,8 +12,9 @@ import {
   PanelLeft,
   Plus,
   X,
+  ClipboardCopy,
 } from "lucide-react";
-import { createSession, deleteSession, getSession, getSessions, getWsUrl, restartSession, stopSession } from "../api";
+import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, restartSession, stopSession } from "../api";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -42,6 +43,8 @@ export default function SessionDetail() {
   const [actionPending, setActionPending] = useState<string | null>(null);
 
   const fileReloadRef = useRef<(() => void) | null>(null);
+  const [termTextModal, setTermTextModal] = useState<string | null>(null);
+  const termTextRef = useRef<HTMLTextAreaElement>(null);
 
   const filesWsUrl = id ? getWsUrl(`/ws/files/${id}`) : null;
 
@@ -62,7 +65,8 @@ export default function SessionDetail() {
   // All sibling terminals for the current session (same path+machine, running).
   // Primary (URL) session is always first; siblings follow in API order.
   const terminalIds = useMemo(() => {
-    if (!session || !id) return id ? [id] : [];
+    if (!id) return [];
+    if (!session) return [id];
     const siblings = sessions
       .filter(s => s.path === session.path && s.machine === session.machine && s.status === "running" && s.id !== id)
       .map(s => s.id);
@@ -84,6 +88,17 @@ export default function SessionDetail() {
     setReloadKey((k) => k + 1);
     fileReloadRef.current?.();
   }, []);
+
+  const handleCopyTerminal = useCallback(async () => {
+    if (!id) return;
+    try {
+      const { text } = await getTerminalText(id);
+      setTermTextModal(text || "(no output)");
+      setTimeout(() => termTextRef.current?.select(), 50);
+    } catch {
+      setTermTextModal("(failed to fetch terminal text)");
+    }
+  }, [id]);
 
   const addTerminalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -218,7 +233,10 @@ export default function SessionDetail() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
-  if (loading) {
+  // Show full-page spinner only on first load (no session data yet).
+  // During SPA navigation between sessions, keep the layout stable so
+  // the terminal container doesn't lose its CSS dimensions.
+  if (loading && !session) {
     return (
       <div className="h-screen bg-slate-950 flex items-center justify-center">
         <RefreshCw className="w-6 h-6 text-slate-500 animate-spin" />
@@ -332,6 +350,24 @@ export default function SessionDetail() {
           </div>
         </div>
       </header>
+
+      {/* Copy terminal text modal */}
+      {termTextModal !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setTermTextModal(null)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl w-[90vw] max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700">
+              <span className="text-sm font-medium text-slate-300">Terminal Text</span>
+              <button onClick={() => setTermTextModal(null)} className="p-1 text-slate-400 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <textarea
+              ref={termTextRef}
+              readOnly
+              value={termTextModal}
+              className="flex-1 m-2 p-3 bg-slate-950 text-slate-200 text-xs font-mono rounded border border-slate-700 resize-none focus:outline-none"
+            />
+          </div>
+        </div>
+      )}
 
       {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
@@ -487,6 +523,13 @@ export default function SessionDetail() {
                 className="ml-auto p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-colors disabled:opacity-30"
               >
                 <Plus className={`w-3 h-3 ${actionPending === "add" ? "animate-pulse" : ""}`} />
+              </button>
+              <button
+                onClick={handleCopyTerminal}
+                title="Copy terminal text"
+                className="p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-700/50 transition-colors"
+              >
+                <ClipboardCopy className="w-3 h-3" />
               </button>
               <button
                 onClick={handleReload}

@@ -187,6 +187,10 @@ export function getUsageHistory(hours?: number, machine?: string): Promise<Usage
   return request<UsageHistoryResponse>(`/api/usage/history${qs ? `?${qs}` : ''}`);
 }
 
+export function getTerminalText(sessionId: string): Promise<{ text: string }> {
+  return request<{ text: string }>(`/api/sessions/${sessionId}/terminal-text`);
+}
+
 export function getWsUrl(path: string): string {
   const token = localStorage.getItem("agenthq_token") || "";
   const base = BASE_URL.replace(/^http/, "ws");
