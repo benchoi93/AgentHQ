@@ -86,6 +86,7 @@ def _load_config(path: str) -> dict:
         if not cfg.get(key):
             raise ValueError(f"Missing required config key: {key}")
     cfg.setdefault("heartbeat_interval", 120)
+    cfg.setdefault("heartbeat_enabled", True)
     cfg.setdefault("coalesce_window", 3)
     return cfg
 
@@ -205,9 +206,11 @@ async def main(config_path: str) -> None:
     queue = CoalescingQueue(relay, window=float(cfg["coalesce_window"]))
     queue_task = asyncio.create_task(queue.run())
 
-    hb_task = asyncio.create_task(
-        heartbeat_loop(relay, queue, int(cfg["heartbeat_interval"]))
-    )
+    hb_task: asyncio.Task | None = None
+    if cfg["heartbeat_enabled"]:
+        hb_task = asyncio.create_task(
+            heartbeat_loop(relay, queue, int(cfg["heartbeat_interval"]))
+        )
 
     bot = Bot(token=cfg["telegram_bot_token"])
     dp = Dispatcher()
@@ -229,13 +232,15 @@ async def main(config_path: str) -> None:
         await queue.enqueue(routed)
         log.info("Telegram → queue: %s", routed[:120])
 
-    log.info("Bridge starting — commander=%s, heartbeat=%ds",
-             cfg["commander_session_id"], cfg["heartbeat_interval"])
+    hb_desc = f"{cfg['heartbeat_interval']}s" if cfg["heartbeat_enabled"] else "disabled"
+    log.info("Bridge starting — commander=%s, heartbeat=%s",
+             cfg["commander_session_id"], hb_desc)
 
     try:
         await dp.start_polling(bot)
     finally:
-        hb_task.cancel()
+        if hb_task is not None:
+            hb_task.cancel()
         queue_task.cancel()
         relay_task.cancel()
         await relay.close()
