@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { Auth } from "./auth";
 import { AgentHqClient } from "./client";
 import { CallbackWatcher } from "./callbacks";
+import { AgentHqFileSystemProvider, SCHEME as FS_SCHEME } from "./files";
 import {
   createNewSession,
   deleteSession,
@@ -13,17 +14,26 @@ import { SessionsTreeProvider, SessionNode } from "./tree";
 
 let tree: SessionsTreeProvider | undefined;
 let watcher: CallbackWatcher | undefined;
+let fsProvider: AgentHqFileSystemProvider | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const auth = new Auth(context.secrets);
   const client = new AgentHqClient(auth);
   tree = new SessionsTreeProvider(client);
   watcher = new CallbackWatcher(client, tree);
+  fsProvider = new AgentHqFileSystemProvider(client);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("agenthq.sessions", tree),
+    // isCaseSensitive: agent runs on Linux/macOS where paths are case-sensitive.
+    // We accept the small mismatch on Windows agents (rare today) rather than
+    // silently lowercasing identifiers and losing files.
+    vscode.workspace.registerFileSystemProvider(FS_SCHEME, fsProvider, {
+      isCaseSensitive: true,
+    }),
     { dispose: () => tree?.dispose() },
     { dispose: () => watcher?.dispose() },
+    { dispose: () => fsProvider?.dispose() },
   );
 
   context.subscriptions.push(
@@ -57,6 +67,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("agenthq.createSession", () =>
       createNewSession(client, tree!),
     ),
+    vscode.commands.registerCommand("agenthq.openWorkspace", async (arg?: SessionNode) => {
+      const session = arg?.session ?? (await pickSessionForAttach(client));
+      if (!session) return;
+      const uri = vscode.Uri.parse(`${FS_SCHEME}://${encodeURIComponent(session.id)}/`);
+      const name = `AgentHQ · ${session.project || session.id} (${session.machine})`;
+      // Open as a new workspace folder so the Explorer treats it as the
+      // workspace root. forceNewWindow keeps the current window untouched
+      // — multiple sessions can be open in parallel windows.
+      await vscode.commands.executeCommand("vscode.openFolder", uri, {
+        forceNewWindow: true,
+        noRecentEntry: false,
+      });
+      // Note: openFolder either replaces the workspace or opens a new
+      // window; control doesn't reliably return here, so any cleanup we
+      // need must happen before this call.
+      void name;
+    }),
     vscode.commands.registerCommand("agenthq.stopSession", (n?: SessionNode) =>
       stopSession(client, tree!, n),
     ),
@@ -120,4 +147,5 @@ async function pickSessionForAttach(client: AgentHqClient) {
 export function deactivate(): void {
   tree?.dispose();
   watcher?.dispose();
+  fsProvider?.dispose();
 }

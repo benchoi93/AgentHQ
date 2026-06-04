@@ -2,7 +2,7 @@
   "name": "agenthq-vscode",
   "displayName": "AgentHQ",
   "description": "Connect to AgentHQ sessions from VS Code: list agents/sessions, attach to terminals, spawn sessions in the current workspace.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "umn-choi-lab",
   "repository": {
     "type": "git",
@@ -92,6 +92,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "agenthq.openWorkspace",
+        "title": "AgentHQ: Open Workspace (Remote Files)",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "agenthq.stopSession",
         "title": "AgentHQ: Stop Session",
         "icon": "$(debug-stop)"
@@ -127,9 +132,19 @@
           "group": "inline@1"
         },
         {
-          "command": "agenthq.restartSession",
+          "command": "agenthq.openWorkspace",
           "when": "view == agenthq.sessions && viewItem == session",
           "group": "inline@2"
+        },
+        {
+          "command": "agenthq.restartSession",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "inline@3"
+        },
+        {
+          "command": "agenthq.openWorkspace",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "1_open"
         },
         {
           "command": "agenthq.stopSession",

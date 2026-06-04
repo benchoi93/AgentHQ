@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -733,6 +736,140 @@ def _read_file(base: Path, rel_path: str) -> dict[str, Any]:
         return {"type": "error", "path": rel_path, "error": str(exc)}
 
 
+def _safe_resolve(base: Path, rel_path: str) -> Path | None:
+    target = (base / rel_path).resolve()
+    if not str(target).startswith(str(base.resolve())):
+        return None
+    return target
+
+
+def _stat(base: Path, rel_path: str) -> dict[str, Any]:
+    target = _safe_resolve(base, rel_path)
+    if target is None:
+        return {"type": "error", "op": "stat", "path": rel_path, "error": "Access denied"}
+    try:
+        st = target.stat()
+    except FileNotFoundError:
+        return {"type": "error", "op": "stat", "path": rel_path, "error": "Not found"}
+    except OSError as exc:
+        return {"type": "error", "op": "stat", "path": rel_path, "error": str(exc)}
+    return {
+        "type": "stat_response",
+        "path": rel_path,
+        "kind": "directory" if target.is_dir() else "file",
+        "size": st.st_size,
+        "mtime": int(st.st_mtime * 1000),
+        "ctime": int(st.st_ctime * 1000),
+    }
+
+
+def _read_bytes(base: Path, rel_path: str) -> dict[str, Any]:
+    target = _safe_resolve(base, rel_path)
+    if target is None:
+        return {"type": "error", "op": "read_bytes", "path": rel_path, "error": "Access denied"}
+    if not target.is_file():
+        return {"type": "error", "op": "read_bytes", "path": rel_path, "error": "Not a file"}
+    if target.stat().st_size > _MAX_FILE_SIZE:
+        return {"type": "error", "op": "read_bytes", "path": rel_path, "error": "File too large (>1 MB)"}
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        return {"type": "error", "op": "read_bytes", "path": rel_path, "error": str(exc)}
+    return {
+        "type": "read_bytes_response",
+        "path": rel_path,
+        "data": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _write_file(base: Path, rel_path: str, data_b64: str, create: bool, overwrite: bool) -> dict[str, Any]:
+    target = _safe_resolve(base, rel_path)
+    if target is None:
+        return {"type": "error", "op": "write", "path": rel_path, "error": "Access denied"}
+    exists = target.exists()
+    if exists and not overwrite:
+        return {"type": "error", "op": "write", "path": rel_path, "error": "File exists (overwrite not set)"}
+    if not exists and not create:
+        return {"type": "error", "op": "write", "path": rel_path, "error": "File missing (create not set)"}
+    try:
+        raw = base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        return {"type": "error", "op": "write", "path": rel_path, "error": f"Bad base64: {exc}"}
+    if len(raw) > _MAX_FILE_SIZE:
+        return {"type": "error", "op": "write", "path": rel_path, "error": "File too large (>1 MB)"}
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        st = target.stat()
+    except OSError as exc:
+        return {"type": "error", "op": "write", "path": rel_path, "error": str(exc)}
+    return {
+        "type": "write_response",
+        "path": rel_path,
+        "size": st.st_size,
+        "mtime": int(st.st_mtime * 1000),
+    }
+
+
+def _delete(base: Path, rel_path: str, recursive: bool) -> dict[str, Any]:
+    target = _safe_resolve(base, rel_path)
+    if target is None:
+        return {"type": "error", "op": "delete", "path": rel_path, "error": "Access denied"}
+    if target == base.resolve():
+        return {"type": "error", "op": "delete", "path": rel_path, "error": "Refusing to delete workspace root"}
+    try:
+        if target.is_dir():
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+        else:
+            target.unlink()
+    except FileNotFoundError:
+        return {"type": "error", "op": "delete", "path": rel_path, "error": "Not found"}
+    except OSError as exc:
+        return {"type": "error", "op": "delete", "path": rel_path, "error": str(exc)}
+    return {"type": "delete_response", "path": rel_path}
+
+
+def _mkdir(base: Path, rel_path: str) -> dict[str, Any]:
+    target = _safe_resolve(base, rel_path)
+    if target is None:
+        return {"type": "error", "op": "mkdir", "path": rel_path, "error": "Access denied"}
+    try:
+        target.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return {"type": "error", "op": "mkdir", "path": rel_path, "error": "Already exists"}
+    except OSError as exc:
+        return {"type": "error", "op": "mkdir", "path": rel_path, "error": str(exc)}
+    return {"type": "mkdir_response", "path": rel_path}
+
+
+def _rename(base: Path, src: str, dst: str, overwrite: bool) -> dict[str, Any]:
+    src_p = _safe_resolve(base, src)
+    dst_p = _safe_resolve(base, dst)
+    if src_p is None or dst_p is None:
+        return {"type": "error", "op": "rename", "path": src, "error": "Access denied"}
+    if not src_p.exists():
+        return {"type": "error", "op": "rename", "path": src, "error": "Source not found"}
+    if dst_p.exists():
+        if not overwrite:
+            return {"type": "error", "op": "rename", "path": src, "error": "Destination exists"}
+        try:
+            if dst_p.is_dir():
+                shutil.rmtree(dst_p)
+            else:
+                dst_p.unlink()
+        except OSError as exc:
+            return {"type": "error", "op": "rename", "path": src, "error": f"Cannot overwrite: {exc}"}
+    try:
+        dst_p.parent.mkdir(parents=True, exist_ok=True)
+        src_p.rename(dst_p)
+    except OSError as exc:
+        return {"type": "error", "op": "rename", "path": src, "error": str(exc)}
+    return {"type": "rename_response", "path": src, "new_path": dst}
+
+
 async def files_for_session(
     cfg: dict[str, Any], session: dict[str, Any], http: aiohttp.ClientSession,
 ) -> None:
@@ -755,6 +892,33 @@ async def files_for_session(
                             resp = await asyncio.to_thread(_list_directory, base, req_path)
                         elif req_type == "read":
                             resp = await asyncio.to_thread(_read_file, base, req_path)
+                        elif req_type == "stat":
+                            resp = await asyncio.to_thread(_stat, base, req_path)
+                        elif req_type == "read_bytes":
+                            resp = await asyncio.to_thread(_read_bytes, base, req_path)
+                        elif req_type == "write":
+                            resp = await asyncio.to_thread(
+                                _write_file,
+                                base,
+                                req_path,
+                                data.get("data", ""),
+                                bool(data.get("create", True)),
+                                bool(data.get("overwrite", True)),
+                            )
+                        elif req_type == "delete":
+                            resp = await asyncio.to_thread(
+                                _delete, base, req_path, bool(data.get("recursive", True))
+                            )
+                        elif req_type == "mkdir":
+                            resp = await asyncio.to_thread(_mkdir, base, req_path)
+                        elif req_type == "rename":
+                            resp = await asyncio.to_thread(
+                                _rename,
+                                base,
+                                req_path,
+                                data.get("new_path", ""),
+                                bool(data.get("overwrite", False)),
+                            )
                         else:
                             resp = {"type": "error", "path": req_path, "error": f"Unknown: {req_type}"}
                         await ws.send_json(resp)
