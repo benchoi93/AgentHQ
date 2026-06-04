@@ -2,7 +2,7 @@
   "name": "agenthq-vscode",
   "displayName": "AgentHQ",
   "description": "Connect to AgentHQ sessions from VS Code: list agents/sessions, attach to terminals, spawn sessions in the current workspace.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "umn-choi-lab",
   "repository": {
     "type": "git",
@@ -88,7 +88,8 @@
       },
       {
         "command": "agenthq.createSession",
-        "title": "AgentHQ: Start Session in Current Workspace"
+        "title": "AgentHQ: New Session",
+        "icon": "$(add)"
       },
       {
         "command": "agenthq.stopSession",

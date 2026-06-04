@@ -6,21 +6,26 @@ import { SessionsTreeProvider, SessionNode } from "./tree";
 // TreeView selection (right-click) or via a QuickPick when invoked from
 // the command palette, so every command works in both contexts.
 
-export async function createSessionFromWorkspace(client: AgentHqClient, tree: SessionsTreeProvider): Promise<void> {
-  const folder = await pickWorkspaceFolder();
-  if (!folder) return;
+export async function createNewSession(client: AgentHqClient, tree: SessionsTreeProvider): Promise<void> {
+  // Pick the agent first — the directory must be a path on the agent's
+  // filesystem, not the local VS Code workspace. (Workspace folders are
+  // useless when VS Code is on Windows and the agent runs on Linux.)
   const agent = await pickAgent(client);
   if (!agent) return;
+
+  const directory = await pickRemoteDirectory(client, agent.machine);
+  if (!directory) return;
+
   const name = await vscode.window.showInputBox({
-    prompt: "Session name (optional)",
-    placeHolder: "Leave blank to auto-name",
+    prompt: `Session name on ${agent.machine} (optional)`,
+    placeHolder: "Leave blank to auto-name from the directory",
   });
   if (name === undefined) return;
 
   try {
     await client.createSession({
       machine: agent.machine,
-      directory: folder.uri.fsPath,
+      directory,
       session_name: name || undefined,
     });
     vscode.window.showInformationMessage(
@@ -30,6 +35,45 @@ export async function createSessionFromWorkspace(client: AgentHqClient, tree: Se
   } catch (err) {
     vscode.window.showErrorMessage(`AgentHQ: ${asError(err).message}`);
   }
+}
+
+// Two-step picker: show recent projects on the chosen agent, plus an
+// "Enter a different path..." escape hatch for new directories. Mirrors
+// the NewSessionModal flow in the web dashboard.
+async function pickRemoteDirectory(client: AgentHqClient, machine: string): Promise<string | undefined> {
+  const suggestions = await client.projectSuggestions(machine).catch(() => []);
+
+  interface Item extends vscode.QuickPickItem {
+    tag: "manual" | "suggestion";
+    path?: string;
+  }
+  const manualItem: Item = {
+    label: "$(edit) Enter a directory path manually…",
+    description: `on ${machine}`,
+    tag: "manual",
+  };
+  const suggestionItems: Item[] = suggestions.map((s): Item => ({
+    label: `$(folder) ${s.name}`,
+    description: s.path,
+    detail: s.last_activity ? `last activity: ${new Date(s.last_activity).toLocaleString()}` : undefined,
+    tag: "suggestion",
+    path: s.path,
+  }));
+  const items: Item[] = [manualItem, ...suggestionItems];
+
+  const pick = await vscode.window.showQuickPick<Item>(items, {
+    placeHolder: `Directory on ${machine} — pick a recent project or enter a new path`,
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  if (!pick) return undefined;
+  if (pick.tag === "suggestion") return pick.path;
+
+  return vscode.window.showInputBox({
+    prompt: `Absolute directory path on ${machine}`,
+    placeHolder: machine.toLowerCase().includes("win") ? "C:\\path\\to\\project" : "/home/user/project",
+    validateInput: (v) => (v.trim() ? undefined : "Directory cannot be empty"),
+  });
 }
 
 export async function stopSession(client: AgentHqClient, tree: SessionsTreeProvider, node?: SessionNode): Promise<void> {
@@ -69,20 +113,6 @@ export async function deleteSession(client: AgentHqClient, tree: SessionsTreePro
   } catch (err) {
     vscode.window.showErrorMessage(`AgentHQ: ${asError(err).message}`);
   }
-}
-
-async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  if (folders.length === 0) {
-    vscode.window.showErrorMessage("AgentHQ: open a folder first — create-session needs a directory path.");
-    return undefined;
-  }
-  if (folders.length === 1) return folders[0];
-  const pick = await vscode.window.showQuickPick(
-    folders.map((f) => ({ label: f.name, description: f.uri.fsPath, folder: f })),
-    { placeHolder: "Workspace folder to use as session directory" },
-  );
-  return pick?.folder;
 }
 
 async function pickAgent(client: AgentHqClient) {

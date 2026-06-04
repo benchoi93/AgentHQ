@@ -3,7 +3,7 @@ import { Auth } from "./auth";
 import { AgentHqClient } from "./client";
 import { CallbackWatcher } from "./callbacks";
 import {
-  createSessionFromWorkspace,
+  createNewSession,
   deleteSession,
   restartSession,
   stopSession,
@@ -55,7 +55,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand("agenthq.createSession", () =>
-      createSessionFromWorkspace(client, tree!),
+      createNewSession(client, tree!),
     ),
     vscode.commands.registerCommand("agenthq.stopSession", (n?: SessionNode) =>
       stopSession(client, tree!, n),
