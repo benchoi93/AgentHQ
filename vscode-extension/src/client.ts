@@ -40,19 +40,35 @@ export class AgentHqClient {
     if (!token) {
       throw new Error("AgentHQ token not set. Run 'AgentHQ: Set API Token'.");
     }
-    const url = `${this.baseUrl()}${path}`;
+    const base = this.baseUrl();
+    if (!base) {
+      throw new Error("AgentHQ: server URL not set. Open Settings → search 'agenthq.serverUrl'.");
+    }
+    const url = `${base}${path}`;
     const headers: Record<string, string> = {
       "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
       ...((init?.headers as Record<string, string>) || {}),
     };
-    const res = await fetch(url, { ...init, headers });
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers });
+    } catch (err) {
+      // Node's fetch (undici) throws a bare "fetch failed" TypeError for
+      // anything from DNS failures to TLS errors. Surface the URL and the
+      // underlying cause so the user knows where to look.
+      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+      const detail = cause?.code || cause?.message || (err instanceof Error ? err.message : String(err));
+      throw new Error(
+        `AgentHQ: cannot reach ${url} (${detail}). Check 'agenthq.serverUrl' setting and that the server is reachable from this machine.`,
+      );
+    }
     if (res.status === 401) {
-      throw new Error("AgentHQ: 401 unauthorized. Reset the token.");
+      throw new Error(`AgentHQ: 401 unauthorized at ${url}. Token may be wrong — run 'AgentHQ: Set API Token'.`);
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`AgentHQ ${res.status} ${res.statusText} (${path})${body ? `: ${body}` : ""}`);
+      throw new Error(`AgentHQ ${res.status} ${res.statusText} (${url})${body ? `: ${body}` : ""}`);
     }
     // DELETE may legitimately return empty body
     if (res.status === 204 || res.headers.get("content-length") === "0") {
