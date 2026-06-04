@@ -38,6 +38,19 @@ const RECONNECT_MAX_MS = 15_000;
 
 export const SCHEME = "agenthq";
 
+// Lazy Output channel — created on first log so the test extension host
+// (where the channel may be invisible) doesn't pay the cost.
+let logChannel: vscode.OutputChannel | undefined;
+function log(msg: string): void {
+  if (!logChannel) logChannel = vscode.window.createOutputChannel("AgentHQ");
+  const ts = new Date().toISOString().slice(11, 23);
+  logChannel.appendLine(`[${ts}] ${msg}`);
+}
+export function showLog(): void {
+  if (!logChannel) logChannel = vscode.window.createOutputChannel("AgentHQ");
+  logChannel.show();
+}
+
 type Pending = {
   expect: string; // response type to match
   resolve: (msg: any) => void;
@@ -86,19 +99,31 @@ class SessionFiles {
   private async connect(): Promise<WebSocket> {
     if (this.disposed) throw new vscode.FileSystemError("Provider disposed");
     const url = await this.client.wsUrl(`/ws/files/${encodeURIComponent(this.sessionId)}`);
-    if (!url) throw new vscode.FileSystemError("AgentHQ token not set");
+    if (!url) {
+      log(`${this.sessionId}: no token set — cannot connect`);
+      throw new vscode.FileSystemError(
+        "AgentHQ: no token set in this window. Run 'AgentHQ: Set API Token'.",
+      );
+    }
+    log(`${this.sessionId}: connecting ${url.replace(/token=[^&]+/, "token=***")}`);
     return await new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(url);
       const onError = (err: Error) => {
         ws.removeAllListeners();
-        reject(err);
+        const detail = (err as { code?: string }).code || err.message;
+        log(`${this.sessionId}: WS connect error (${detail})`);
+        reject(new vscode.FileSystemError(`AgentHQ: cannot reach files WS (${detail})`));
       };
       ws.once("open", () => {
         ws.removeListener("error", onError);
         this.ws = ws;
         this.reconnectAttempts = 0;
+        log(`${this.sessionId}: WS connected`);
         ws.on("message", (raw) => this.onMessage(raw));
-        ws.on("close", () => this.onClose());
+        ws.on("close", (code, reason) => {
+          log(`${this.sessionId}: WS closed (code=${code}, reason=${reason?.toString() || "n/a"})`);
+          this.onClose();
+        });
         ws.on("error", () => ws.close());
         resolve(ws);
       });

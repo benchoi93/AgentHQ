@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { Auth } from "./auth";
 import { AgentHqClient } from "./client";
 import { CallbackWatcher } from "./callbacks";
-import { AgentHqFileSystemProvider, SCHEME as FS_SCHEME } from "./files";
+import { AgentHqFileSystemProvider, SCHEME as FS_SCHEME, showLog as showFsLog } from "./files";
 import {
   createNewSession,
   deleteSession,
@@ -38,6 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agenthq.refresh", () => tree?.refresh()),
+    vscode.commands.registerCommand("agenthq.showLog", () => showFsLog()),
 
     vscode.commands.registerCommand("agenthq.setToken", async () => {
       const entered = await vscode.window.showInputBox({
