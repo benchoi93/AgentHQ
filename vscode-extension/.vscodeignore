@@ -1,0 +1,13 @@
+.vscode/**
+src/**
+**/tsconfig.json
+**/*.map
+**/*.ts
+# Exclude every node_modules subtree, then re-include only `ws` —
+# the single runtime dependency. ws is pure JS, no native bindings,
+# so the resulting vsix installs cleanly on Windows / macOS / Linux.
+node_modules/**
+!node_modules/ws/**
+node_modules/ws/test/**
+node_modules/ws/*.md
+.gitignore

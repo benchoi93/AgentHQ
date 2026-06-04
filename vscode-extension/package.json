@@ -1,0 +1,160 @@
+{
+  "name": "agenthq-vscode",
+  "displayName": "AgentHQ",
+  "description": "Connect to AgentHQ sessions from VS Code: list agents/sessions, attach to terminals, spawn sessions in the current workspace.",
+  "version": "0.1.0",
+  "publisher": "umn-choi-lab",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/benchoi93/AgentHQ"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "AgentHQ",
+      "properties": {
+        "agenthq.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:30001",
+          "description": "Base URL of the AgentHQ server (no trailing slash)."
+        },
+        "agenthq.refreshIntervalSec": {
+          "type": "number",
+          "default": 10,
+          "minimum": 2,
+          "description": "Interval in seconds for polling sessions/agents."
+        },
+        "agenthq.callbackPollSec": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "description": "Interval in seconds for polling per-session callbacks."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agenthq",
+          "title": "AgentHQ",
+          "icon": "$(server-process)"
+        }
+      ]
+    },
+    "views": {
+      "agenthq": [
+        {
+          "id": "agenthq.sessions",
+          "name": "Sessions",
+          "icon": "$(server-process)",
+          "contextualTitle": "AgentHQ Sessions"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agenthq.sessions",
+        "contents": "No AgentHQ token configured.\n[Set Token](command:agenthq.setToken)\nOr [Open Settings](command:workbench.action.openSettings?%22agenthq%22) to set the server URL."
+      }
+    ],
+    "commands": [
+      {
+        "command": "agenthq.refresh",
+        "title": "AgentHQ: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agenthq.setToken",
+        "title": "AgentHQ: Set API Token"
+      },
+      {
+        "command": "agenthq.clearToken",
+        "title": "AgentHQ: Clear API Token"
+      },
+      {
+        "command": "agenthq.attachTerminal",
+        "title": "AgentHQ: Attach Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "agenthq.createSession",
+        "title": "AgentHQ: Start Session in Current Workspace"
+      },
+      {
+        "command": "agenthq.stopSession",
+        "title": "AgentHQ: Stop Session",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "agenthq.restartSession",
+        "title": "AgentHQ: Restart Session",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "agenthq.deleteSession",
+        "title": "AgentHQ: Delete Session",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agenthq.refresh",
+          "when": "view == agenthq.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "agenthq.createSession",
+          "when": "view == agenthq.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agenthq.attachTerminal",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "agenthq.restartSession",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "inline@2"
+        },
+        {
+          "command": "agenthq.stopSession",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "1_lifecycle"
+        },
+        {
+          "command": "agenthq.deleteSession",
+          "when": "view == agenthq.sessions && viewItem == session",
+          "group": "1_lifecycle"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.4.5"
+  }
+}
