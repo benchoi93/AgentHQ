@@ -85,17 +85,43 @@ class TmuxBackend(SessionBackend):
     def _apply_tmux_defaults(tmux_name: str) -> None:
         """Apply AgentHQ defaults to a tmux session: mouse, scrollback, etc."""
         for cmd in [
-            # mouse OFF on purpose: Claude Code renders in the normal buffer,
-            # so its output flows into scrollback. With mouse on, tmux makes the
-            # outer terminal (xterm.js) forward wheel/touch as mouse events into
-            # tmux copy-mode, which is janky over the websocket and breaks touch
-            # scrolling on mobile. Off lets xterm.js scroll its own buffer natively.
-            ["tmux", "set-option", "-t", tmux_name, "mouse", "off"],
+            # mouse ON: tmux attach holds the OUTER alternate screen, so xterm.js
+            # has no native scrollback while attached — mouse off makes scrolling
+            # impossible. With mouse on, xterm.js forwards the wheel to tmux and
+            # the custom WheelUp/DownPane bindings below route it correctly.
+            ["tmux", "set-option", "-t", tmux_name, "mouse", "on"],
             ["tmux", "set-window-option", "-t", tmux_name, "alternate-screen", "on"],
             ["tmux", "set-option", "-t", tmux_name, "history-limit", "50000"],
             # Keep pane alive when Claude exits — prevents session death cycle.
             # Dead panes are respawned by _respawn_if_dead() on next heartbeat.
             ["tmux", "set-option", "-t", tmux_name, "remain-on-exit", "on"],
+        ]:
+            subprocess.run(cmd, capture_output=True, timeout=5)
+        TmuxBackend._apply_wheel_bindings()
+
+    @staticmethod
+    def _apply_wheel_bindings() -> None:
+        """Install mode-agnostic mouse-wheel bindings (server-global root table).
+
+        Routes the wheel by how the pane's app renders, NOT by its mouse mode:
+          - inline / normal buffer (modern Claude, alternate_on=0): wheel enters
+            tmux copy-mode and scrolls the pane history. The DEFAULT tmux wheel
+            binding can't do this — it keys on #{mouse_any_flag}, which Claude
+            sets to 1 for click support, so it forwards the wheel to Claude,
+            which ignores it (this is the long-standing scroll bug).
+          - full-screen TUI (older Claude, alternate_on=1) or already in
+            copy-mode: `send -M` so the app / copy-mode scrolls its own view.
+        Keying on #{alternate_on} instead of #{mouse_any_flag} is what makes
+        scrolling work for both rendering modes and ends the mouse on/off
+        flip-flop. These are -n (root-table) binds, global to the tmux server,
+        so one install covers every session; re-running is idempotent.
+        """
+        cond = "#{||:#{pane_in_mode},#{alternate_on}}"
+        for cmd in [
+            ["tmux", "bind-key", "-n", "WheelUpPane",
+             "if", "-F", cond, "send -M", "copy-mode -e ; send -M"],
+            ["tmux", "bind-key", "-n", "WheelDownPane",
+             "if", "-F", cond, "send -M", "send -M"],
         ]:
             subprocess.run(cmd, capture_output=True, timeout=5)
 
@@ -589,6 +615,11 @@ class TmuxBackend(SessionBackend):
                 master_fd, slave_fd = pty.openpty()
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
                             struct.pack("HHHH", init_rows, init_cols, 0, 0))
+                # Ensure TERM is set — daemonized agents (nohup, no controlling
+                # tty) sometimes inherit an env without TERM, which makes
+                # `tmux attach` fail immediately with "terminal does not
+                # support clear" and the PTY emits no output.
+                env = {**os.environ, "TERM": os.environ.get("TERM") or "xterm-256color"}
                 proc = subprocess.Popen(
                     cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
                     close_fds=True, start_new_session=True,
@@ -599,6 +630,7 @@ class TmuxBackend(SessionBackend):
                     preexec_fn=lambda: fcntl.ioctl(
                         0, termios.TIOCSCTTY, 0),
                     cwd=cwd,
+                    env=env,
                 )
                 os.close(slave_fd)
                 log.info("PTY started: %s (%dx%d)", label, init_cols, init_rows)
@@ -674,6 +706,28 @@ class TmuxBackend(SessionBackend):
                                     except (subprocess.TimeoutExpired,
                                             FileNotFoundError):
                                         pass
+                                    # Re-assert mouse reporting to the (re)connecting
+                                    # viewer so the wheel scrolls. tmux emits the
+                                    # mouse-enable (?1002h/?1006h) only ONCE per client,
+                                    # at attach. The browser's xterm.js is a late-joining
+                                    # MIRROR of this persistent `tmux attach`, so it never
+                                    # sees that one-time enable → xterm.js stays out of
+                                    # mouse mode → it never forwards the wheel as SGR, and
+                                    # web-terminal scrolling is dead even though tmux mouse
+                                    # is on. refresh-client redraws content but does NOT
+                                    # re-emit the mode; toggling mouse off→on does, and the
+                                    # PTY relay pumps it to the browser. Resize fires on
+                                    # every browser connect, so this re-arms each viewer.
+                                    for state in ("off", "on"):
+                                        try:
+                                            subprocess.run(
+                                                ["tmux", "set-option", "-t",
+                                                 tmux_pane, "mouse", state],
+                                                capture_output=True, timeout=5,
+                                            )
+                                        except (subprocess.TimeoutExpired,
+                                                FileNotFoundError):
+                                            pass
                         elif msg.type in (aiohttp.WSMsgType.CLOSED,
                                           aiohttp.WSMsgType.ERROR):
                             break
@@ -712,13 +766,16 @@ class TmuxBackend(SessionBackend):
         # size instead of the smallest, then attach.
         for cmd in [
             ["tmux", "set-option", "-t", pane, "window-size", "latest"],
-            # mouse OFF so xterm.js handles wheel/touch scrolling natively from
-            # its own scrollback (see _apply_tmux_defaults for the full rationale).
-            ["tmux", "set-option", "-t", pane, "mouse", "off"],
+            # mouse ON + custom wheel bindings (see _apply_tmux_defaults /
+            # _apply_wheel_bindings): xterm.js has no scrollback while attached
+            # (tmux holds the outer alt screen), so mouse must be on for the
+            # wheel to reach tmux copy-mode.
+            ["tmux", "set-option", "-t", pane, "mouse", "on"],
             ["tmux", "set-window-option", "-t", pane, "alternate-screen", "on"],
             ["tmux", "set-option", "-t", pane, "history-limit", "50000"],
         ]:
             subprocess.run(cmd, capture_output=True, timeout=5)
+        TmuxBackend._apply_wheel_bindings()
 
     async def attach_terminal(
         self, ws_url: str, session: dict[str, Any],
@@ -789,6 +846,33 @@ class TmuxBackend(SessionBackend):
                 if proc.returncode == 0 and proc.stdout.strip():
                     epoch = int(proc.stdout.strip())
                     result[sid] = now - epoch
+            except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                pass
+        return result
+
+    def get_sessions_input_activity(self) -> dict[str, float]:
+        """Return {session_id: epoch_seconds_of_last_user_input}.
+
+        Uses tmux session_activity, which updates ONLY on attached-client
+        keystrokes — NOT on programmatic send-keys (so the agent's own
+        /compact and /clear injections won't falsely count as user input)
+        and NOT on process output (so a busy Claude pane doesn't count).
+        The agent's PTY pump is the attached client, so genuine user input
+        from the browser/relay forwards through it as client keystrokes.
+        """
+        result: dict[str, float] = {}
+        for sid, info in self.sessions.items():
+            tmux_name = info.get("tmux_name", "")
+            if not self._tmux_alive(tmux_name):
+                continue
+            try:
+                proc = subprocess.run(
+                    ["tmux", "display", "-p", "-t", tmux_name,
+                     "#{session_activity}"],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    result[sid] = float(proc.stdout.strip())
             except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
                 pass
         return result
