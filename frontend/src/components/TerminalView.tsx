@@ -258,16 +258,31 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     setTimeout(() => mobileInputRef.current?.focus(), 50);
   }, [mobileInput, sendInput]);
 
-  // Page-scroll the xterm buffer. Operates directly on xterm's internal
-  // viewport offset, so it works even when wheel/touch events are captured
-  // elsewhere (or when the native scrollbar refuses to render).
+  // Page-scroll the terminal. In the NORMAL buffer we move xterm's own
+  // viewport offset. In the ALTERNATE buffer (a full-screen TUI like Claude
+  // Code) xterm has no scrollback — `tmux attach` holds the outer alt screen —
+  // so scrollLines() is a no-op. There we instead inject SGR mouse-wheel
+  // events into the PTY: with tmux `mouse on`, tmux forwards them to the
+  // mouse-aware app (Claude Code scrolls its own view) or enters copy-mode for
+  // a plain shell. This mirrors how the desktop wheel already reaches the app.
   const scrollPage = useCallback((dir: "up" | "down" | "bottom") => {
     const t = terminalRef.current;
     if (!t) return;
+    if (t.buffer.active.type === "alternate") {
+      // SGR wheel: \e[<64;col;rowM = up, \e[<65;col;rowM = down. The
+      // coordinates only tell tmux which pane to target; screen-center is
+      // always in-bounds. One tap ≈ a few notches; "bottom" sends a long burst.
+      const col = Math.max(1, Math.floor(t.cols / 2));
+      const row = Math.max(1, Math.floor(t.rows / 2));
+      const code = dir === "up" ? 64 : 65;
+      const notches = dir === "bottom" ? 50 : 5;
+      sendInput(`\x1b[<${code};${col};${row}M`.repeat(notches));
+      return;
+    }
     if (dir === "bottom") { t.scrollToBottom(); return; }
     const lines = Math.max(1, t.rows - 2);
     t.scrollLines(dir === "up" ? -lines : lines);
-  }, []);
+  }, [sendInput]);
 
   return (
     <div className="h-full relative flex flex-col">
@@ -277,9 +292,9 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
           <p className="text-slate-500 text-sm italic">Connecting to terminal...</p>
         </div>
       )}
-      {/* Scroll controls — visible affordance for scrolling the xterm buffer.
-          Calls xterm's scrollLines() directly so it works regardless of
-          wheel/touch capture or whether the native scrollbar is visible. */}
+      {/* Scroll controls — visible affordance that works in both buffers:
+          xterm's own viewport in the normal buffer, and injected SGR wheel
+          events to the PTY in the alt buffer (full-screen TUIs). See scrollPage. */}
       {connected && (
         <div className="absolute top-2 right-2 z-10 flex flex-col gap-1">
           <button
