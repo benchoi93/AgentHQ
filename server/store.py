@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity TEXT NOT NULL,
     metadata TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
 
@@ -116,6 +117,7 @@ async def get_db() -> aiosqlite.Connection:
             "ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agents ADD COLUMN agent_version TEXT",
             "ALTER TABLE sessions ADD COLUMN account TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 await _db.execute(migration)
@@ -362,6 +364,16 @@ async def unhide_session(session_id: str) -> bool:
     db = await get_db()
     cursor = await db.execute(
         "UPDATE sessions SET hidden = 0 WHERE id = ?", (session_id,),
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def set_session_pinned(session_id: str, pinned: bool) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE sessions SET pinned = ? WHERE id = ?",
+        (1 if pinned else 0, session_id),
     )
     await db.commit()
     return cursor.rowcount > 0

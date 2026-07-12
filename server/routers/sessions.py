@@ -24,6 +24,10 @@ class SessionReport(BaseModel):
     summary: str                     # Human-readable message
     task_id: Optional[str] = None    # Commander task ID to update
 
+
+class PinRequest(BaseModel):
+    pinned: bool
+
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -119,6 +123,18 @@ async def restart_session(
         json.dumps(payload),
     )
     return {"ok": True, "command_id": cmd_id}
+
+
+@router.post("/{session_id}/pin")
+async def pin_session(
+    session_id: str,
+    req: PinRequest,
+    _token: str = Depends(require_token),
+):
+    updated = await store.set_session_pinned(session_id, req.pinned)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, "pinned": req.pinned}
 
 
 @router.post("/{session_id}/stop")

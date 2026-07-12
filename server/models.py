@@ -68,6 +68,7 @@ class SessionInfo(BaseModel):
     last_activity: str = ""
     agent_version: Optional[str] = None
     account: str = ""
+    pinned: bool = False
 
 
 class SessionDetail(SessionInfo):

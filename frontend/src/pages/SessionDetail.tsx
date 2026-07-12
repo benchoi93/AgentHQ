@@ -13,8 +13,9 @@ import {
   Plus,
   X,
   ClipboardCopy,
+  Pin,
 } from "lucide-react";
-import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, restartSession, stopSession } from "../api";
+import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, pinSession, restartSession, stopSession } from "../api";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -50,17 +51,36 @@ export default function SessionDetail() {
 
   const files = useWebSocket<FileMessage>({ url: filesWsUrl });
 
-  // Deduplicated sidebar: one entry per unique path+machine (pick first by id)
+  // Deduplicated sidebar: one entry per unique path+machine. Prefer a
+  // pinned session so toggling pin on the visible row matches the row
+  // shown across dedup re-runs.
   const sidebarSessions = useMemo(() => {
     const seen = new Map<string, Session>();
     for (const s of sessions) {
       const key = `${s.machine}:${s.path}`;
-      if (!seen.has(key)) {
+      const prev = seen.get(key);
+      if (!prev || (s.pinned && !prev.pinned)) {
         seen.set(key, s);
       }
     }
     return Array.from(seen.values());
   }, [sessions]);
+
+  const handleTogglePin = useCallback(async (s: Session) => {
+    const next = !s.pinned;
+    // Optimistic update on every session sharing this id.
+    setSessions((prev) =>
+      prev.map((x) => (x.id === s.id ? { ...x, pinned: next } : x))
+    );
+    try {
+      await pinSession(s.id, next);
+    } catch {
+      // Revert on error.
+      setSessions((prev) =>
+        prev.map((x) => (x.id === s.id ? { ...x, pinned: !next } : x))
+      );
+    }
+  }, []);
 
   // All sibling terminals for the current session (same path+machine, running).
   // Primary (URL) session is always first; siblings follow in API order.
@@ -388,61 +408,105 @@ export default function SessionDetail() {
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto">
-                {Object.entries(
-                  sidebarSessions.reduce<Record<string, Session[]>>((acc, s) => {
+                {(() => {
+                  const renderRow = (s: Session, showMachine: boolean) => {
+                    const siblings = sessions.filter(
+                      ss => ss.path === s.path && ss.machine === s.machine && ss.status === "running"
+                    ).length;
+                    const isActive = s.id === id || (session && s.path === session.path && s.machine === session.machine);
+                    return (
+                      <div
+                        key={s.id}
+                        className={`group w-full flex items-stretch transition-colors border-l-2
+                                   ${isActive
+                                     ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
+                                     : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
+                                   }`}
+                      >
+                        <button
+                          onClick={() => {
+                            if (isActive) {
+                              setReloadKey((k) => k + 1);
+                              fileReloadRef.current?.();
+                            } else {
+                              navigate(`/session/${s.id}`);
+                            }
+                            if (window.innerWidth < 768) setSidebarOpen(false);
+                          }}
+                          className="flex-1 min-w-0 text-left px-3 py-1.5 flex items-center gap-2"
+                        >
+                          <Circle
+                            className={`w-1.5 h-1.5 flex-shrink-0 fill-current ${STATUS_COLORS[s.status] || "text-slate-600"}`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-medium truncate">{s.project}</div>
+                            {showMachine && (
+                              <div className="text-[9px] text-slate-600 uppercase tracking-widest truncate">
+                                {s.machine}
+                              </div>
+                            )}
+                          </div>
+                          {siblings > 1 && (
+                            <span className="text-[9px] text-slate-600 bg-slate-800 px-1 rounded">
+                              {siblings}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleTogglePin(s); }}
+                          title={s.pinned ? "Unpin from top" : "Pin to top"}
+                          aria-label={s.pinned ? "Unpin" : "Pin to top"}
+                          className={`px-2 flex items-center transition-colors
+                                     ${s.pinned
+                                       ? "text-yellow-400 hover:text-yellow-300"
+                                       : "text-slate-500 hover:text-slate-300 md:text-slate-700 md:opacity-0 md:group-hover:opacity-100"
+                                     }`}
+                        >
+                          <Pin
+                            className={`w-3 h-3 ${s.pinned ? "fill-current" : ""}`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  };
+
+                  const pinned = sidebarSessions.filter((s) => s.pinned);
+                  const unpinned = sidebarSessions.filter((s) => !s.pinned);
+                  const byMachine = unpinned.reduce<Record<string, Session[]>>((acc, s) => {
                     const key = s.machine || "Unknown";
                     if (!acc[key]) acc[key] = [];
                     acc[key].push(s);
                     return acc;
-                  }, {})
-                )
-                  .sort(([a], [b]) => a.localeCompare(b))
-                  .map(([machineName, machineSessions]) => (
-                    <div key={machineName}>
-                      <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/50 sticky top-0">
-                        <span className="text-[9px] font-semibold text-slate-600 uppercase tracking-widest">
-                          {machineName}
-                        </span>
-                      </div>
-                      {machineSessions.map((s) => {
-                        // Count sibling terminals for this project
-                        const siblings = sessions.filter(
-                          ss => ss.path === s.path && ss.machine === s.machine && ss.status === "running"
-                        ).length;
-                        const isActive = s.id === id || (session && s.path === session.path && s.machine === session.machine);
-                        return (
-                          <button
-                            key={s.id}
-                            onClick={() => {
-                              if (isActive) {
-                                setReloadKey((k) => k + 1);
-                                fileReloadRef.current?.();
-                              } else {
-                                navigate(`/session/${s.id}`);
-                              }
-                              // Auto-close sidebar on mobile
-                              if (window.innerWidth < 768) setSidebarOpen(false);
-                            }}
-                            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors border-l-2
-                                       ${isActive
-                                         ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
-                                         : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
-                                       }`}
-                          >
-                            <Circle
-                              className={`w-1.5 h-1.5 flex-shrink-0 fill-current ${STATUS_COLORS[s.status] || "text-slate-600"}`}
-                            />
-                            <div className="text-xs font-medium truncate flex-1">{s.project}</div>
-                            {siblings > 1 && (
-                              <span className="text-[9px] text-slate-600 bg-slate-800 px-1 rounded">
-                                {siblings}
+                  }, {});
+
+                  return (
+                    <>
+                      {pinned.length > 0 && (
+                        <div>
+                          <div className="px-3 py-1 bg-yellow-900/10 border-b border-slate-800/50 sticky top-0 flex items-center gap-1.5">
+                            <Pin className="w-2.5 h-2.5 text-yellow-500/70 fill-yellow-500/70" />
+                            <span className="text-[9px] font-semibold text-yellow-600/80 uppercase tracking-widest">
+                              Pinned
+                            </span>
+                          </div>
+                          {pinned.map((s) => renderRow(s, true))}
+                        </div>
+                      )}
+                      {Object.entries(byMachine)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([machineName, machineSessions]) => (
+                          <div key={machineName}>
+                            <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/50 sticky top-0">
+                              <span className="text-[9px] font-semibold text-slate-600 uppercase tracking-widest">
+                                {machineName}
                               </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
+                            </div>
+                            {machineSessions.map((s) => renderRow(s, false))}
+                          </div>
+                        ))}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
