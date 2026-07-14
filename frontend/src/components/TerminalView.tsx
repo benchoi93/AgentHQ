@@ -228,6 +228,33 @@ export default function TerminalView({ wsUrl, fontSize = 13 }: TerminalViewProps
     return () => disposable.dispose();
   }, [sendInput]);
 
+  // Deterministic mouse-wheel scroll. The browser xterm.js is a late-joining
+  // MIRROR of the agent's single `tmux attach` PTY and unreliably enters mouse
+  // mode (it misses tmux's one-time `?1002h`), so the native wheel — which only
+  // forwards when xterm is in mouse mode — often does nothing. Instead inject
+  // SGR wheel bytes straight into the PTY (identical to the ↑/↓ buttons'
+  // scrollPage): with tmux `mouse on`, tmux scrolls the app itself (Claude in
+  // its alt screen) or enters copy-mode (inline Claude / plain shell). Capture
+  // phase + stopImmediatePropagation so xterm never double-handles the same
+  // wheel event; bypasses xterm mouse mode entirely.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const t = terminalRef.current;
+      if (!t) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const col = Math.max(1, Math.floor(t.cols / 2));
+      const row = Math.max(1, Math.floor(t.rows / 2));
+      const code = e.deltaY < 0 ? 64 : 65; // 64 = up, 65 = down
+      const notches = Math.max(1, Math.min(10, Math.round(Math.abs(e.deltaY) / 40)));
+      sendInput(`\x1b[<${code};${col};${row}M`.repeat(notches));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+  }, [sendInput]);
+
   // Send initial resize when connected — re-fit first to ensure correct dimensions
   useEffect(() => {
     if (connected && terminalRef.current && fitAddonRef.current) {
