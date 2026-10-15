@@ -18,8 +18,8 @@ import {
   ChevronRight,
   FolderPlus,
 } from "lucide-react";
-import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, pinSession, restartSession, setSessionGroup, stopSession } from "../api";
-import { effectiveGroup, groupSessions } from "../sessionGroups";
+import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, pinSession, reorderSessions, restartSession, setSessionGroup, stopSession } from "../api";
+import { autoGroup, bySortOrder, effectiveGroup, getFolderOrder, groupSessions, setFolderOrder } from "../sessionGroups";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -87,6 +87,8 @@ export default function SessionDetail() {
   }, []);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropKey, setDropKey] = useState<string | null>(null);
+  const [dragFolder, setDragFolder] = useState<string | null>(null);
+  const [folderOrder, setFolderOrderState] = useState<string[]>(getFolderOrder);
 
   // Move a session (and its sibling terminals on the same path+machine) into a folder; "" = back to auto.
   const handleSetGroup = useCallback(async (s: Session, group_name: string) => {
@@ -99,6 +101,27 @@ export default function SessionDetail() {
       setSessions((prev) => prev.map((x) => (ids.includes(x.id) ? { ...x, group_name: prevById.get(x.id) ?? "" } : x)));
     }
   }, [sessions]);
+
+  // Drop a session above `before`: it joins before's list (pinned, or before's folder) at that
+  // position; sibling terminals of each row move together. Position in the list becomes sort_order.
+  const handleReorder = useCallback(async (target: Session, before: Session) => {
+    if (target.id === before.id || !!target.pinned !== !!before.pinned) return;
+    const sameRow = (a: Session, b: Session) => a.path === b.path && a.machine === b.machine;
+    const folder = effectiveGroup(before);
+    const list = sidebarSessions
+      .filter((s) => (before.pinned ? s.pinned : !s.pinned && effectiveGroup(s) === folder))
+      .filter((s) => !sameRow(s, target))
+      .sort(bySortOrder);
+    const at = list.findIndex((s) => s.id === before.id);
+    list.splice(at < 0 ? list.length : at, 0, target);
+    const ids = list.flatMap((row) => sessions.filter((s) => sameRow(s, row)).map((s) => s.id));
+    const order = new Map(ids.map((sid, i) => [sid, i]));
+    if (!before.pinned && effectiveGroup(target) !== folder) {
+      handleSetGroup(target, autoGroup(target.path) === folder ? "" : folder);
+    }
+    setSessions((prev) => prev.map((x) => (order.has(x.id) ? { ...x, sort_order: order.get(x.id) } : x)));
+    try { await reorderSessions(ids); } catch { /* next poll restores the server order */ }
+  }, [sessions, sidebarSessions, handleSetGroup]);
 
   // Wake a stopped session: recreate it in place, then jump to it once it reports running.
   const [waking, setWaking] = useState<Set<string>>(new Set());
@@ -461,6 +484,23 @@ export default function SessionDetail() {
               </div>
               <div className="flex-1 overflow-y-auto">
                 {(() => {
+                  const dropProps = (key: string, onDropSession: (s: Session) => void, onDropFolder?: (name: string) => void) => ({
+                    onDragOver: (e: React.DragEvent) => {
+                      if (dragFolder && !onDropFolder) return; // folders only land on folder headers
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dropKey !== key) setDropKey(key);
+                    },
+                    onDragLeave: () => { if (dropKey === key) setDropKey(null); },
+                    onDrop: (e: React.DragEvent) => {
+                      e.preventDefault();
+                      setDropKey(null);
+                      const data = e.dataTransfer.getData("text/plain");
+                      if (data.startsWith("folder:")) { onDropFolder?.(data.slice(7)); return; }
+                      const target = sessions.find((x) => x.id === data);
+                      if (target) onDropSession(target);
+                    },
+                  });
                   const renderRow = (s: Session, showMachine: boolean) => {
                     const siblings = sessions.filter(
                       ss => ss.path === s.path && ss.machine === s.machine && ss.status === "running"
@@ -472,8 +512,10 @@ export default function SessionDetail() {
                         draggable
                         onDragStart={(e) => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; setDragId(s.id); }}
                         onDragEnd={() => { setDragId(null); setDropKey(null); }}
-                        title={`${s.path}  (drag onto a folder)`}
+                        {...dropProps(`row:${s.id}`, (t) => handleReorder(t, s))}
+                        title={`${s.path}  (drag onto a folder, or above a row to reorder)`}
                         className={`group w-full flex items-stretch transition-colors border-l-2 cursor-grab
+                                   ${dropKey === `row:${s.id}` ? "shadow-[inset_0_2px_0_0_#3b82f6]" : ""}
                                    ${isActive
                                      ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
                                      : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
@@ -524,10 +566,19 @@ export default function SessionDetail() {
                     );
                   };
 
-                  const pinned = sidebarSessions.filter((s) => s.pinned);
+                  const pinned = sidebarSessions.filter((s) => s.pinned).sort(bySortOrder);
                   const unpinned = sidebarSessions.filter((s) => !s.pinned);
                   const multiMachine = new Set(sidebarSessions.map((s) => s.machine)).size > 1;
-                  const groups = groupSessions(unpinned);
+                  const groups = groupSessions(unpinned, folderOrder);
+                  // Drag a folder header above another: per-browser folder order.
+                  const moveFolder = (name: string, before: string) => {
+                    if (name === before) return;
+                    const names = groups.map(([n]) => n).filter((n) => n !== name);
+                    const at = names.indexOf(before);
+                    names.splice(at < 0 ? names.length : at, 0, name);
+                    setFolderOrder(names);
+                    setFolderOrderState(names);
+                  };
                   // Stopped sessions (one per path+machine, none with a live twin) — click to wake.
                   const liveKeys = new Set(sidebarSessions.map((s) => `${s.machine}:${s.path}`));
                   const stoppedSeen = new Set<string>();
@@ -542,20 +593,6 @@ export default function SessionDetail() {
                     .sort((a, b) => a.project.localeCompare(b.project));
                   const stoppedOpen = collapsed.has("__stopped_open__"); // default collapsed, so the key is stored inverted
                   const dragging = dragId ? sessions.find((x) => x.id === dragId) : undefined;
-                  const dropProps = (key: string, onDropSession: (s: Session) => void) => ({
-                    onDragOver: (e: React.DragEvent) => {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "move";
-                      if (dropKey !== key) setDropKey(key);
-                    },
-                    onDragLeave: () => { if (dropKey === key) setDropKey(null); },
-                    onDrop: (e: React.DragEvent) => {
-                      e.preventDefault();
-                      setDropKey(null);
-                      const target = sessions.find((x) => x.id === e.dataTransfer.getData("text/plain"));
-                      if (target) onDropSession(target);
-                    },
-                  });
 
                   return (
                     <>
@@ -578,9 +615,13 @@ export default function SessionDetail() {
                             <button
                               type="button"
                               onClick={() => toggleCollapsed(name)}
-                              {...dropProps(name, (t) => handleSetGroup(t, effectiveGroup({ ...t, group_name: "" }) === name ? "" : name))}
-                              className={`w-full px-3 py-1 border-b border-slate-800/50 sticky top-0 flex items-center gap-1 text-left
-                                         ${dropKey === name ? "bg-blue-900/40" : isManual ? "bg-indigo-900/20" : "bg-slate-900/60"}`}
+                              draggable
+                              onDragStart={(e) => { e.dataTransfer.setData("text/plain", `folder:${name}`); e.dataTransfer.effectAllowed = "move"; setDragFolder(name); }}
+                              onDragEnd={() => { setDragFolder(null); setDropKey(null); }}
+                              {...dropProps(name, (t) => handleSetGroup(t, effectiveGroup({ ...t, group_name: "" }) === name ? "" : name), (f) => moveFolder(f, name))}
+                              title="Click to collapse · drop a session here · drag to reorder folders"
+                              className={`w-full px-3 py-1 border-b border-slate-800/50 sticky top-0 flex items-center gap-1 text-left cursor-grab
+                                         ${dropKey === name ? (dragFolder ? "shadow-[inset_0_2px_0_0_#3b82f6] bg-slate-900/60" : "bg-blue-900/40") : isManual ? "bg-indigo-900/20" : "bg-slate-900/60"}`}
                             >
                               {isCollapsed
                                 ? <ChevronRight className="w-2.5 h-2.5 flex-shrink-0 text-slate-600" />

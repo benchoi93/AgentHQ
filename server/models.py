@@ -70,6 +70,7 @@ class SessionInfo(BaseModel):
     account: str = ""
     pinned: bool = False
     group_name: str = ""  # manual folder; '' = derived from path
+    sort_order: int = 0     # manual sidebar order within a folder
 
 
 class SessionDetail(SessionInfo):

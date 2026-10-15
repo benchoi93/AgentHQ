@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     hidden INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     group_name TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
 
@@ -120,6 +121,7 @@ async def get_db() -> aiosqlite.Connection:
             "ALTER TABLE sessions ADD COLUMN account TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 await _db.execute(migration)
@@ -403,6 +405,17 @@ async def set_session_group(session_id: str, group_name: str) -> bool:
     )
     await db.commit()
     return cursor.rowcount > 0
+
+
+async def reorder_sessions(ids: list[str]) -> None:
+    """Manual sidebar order: position in `ids` becomes sort_order (clients sort
+    by sort_order, then name; untouched rows keep 0)."""
+    db = await get_db()
+    await db.executemany(
+        "UPDATE sessions SET sort_order = ? WHERE id = ?",
+        [(i, sid) for i, sid in enumerate(ids)],
+    )
+    await db.commit()
 
 
 async def upsert_known_projects(

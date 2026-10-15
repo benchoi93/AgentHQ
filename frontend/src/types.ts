@@ -29,6 +29,7 @@ export interface Session {
   account?: string;
   pinned?: boolean;
   group_name?: string;
+  sort_order?: number;
 }
 
 export interface LogMessage {

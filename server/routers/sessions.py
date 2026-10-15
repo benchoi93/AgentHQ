@@ -32,6 +32,10 @@ class PinRequest(BaseModel):
 class GroupRequest(BaseModel):
     group_name: str = ""
 
+
+class ReorderRequest(BaseModel):
+    ids: list[str]
+
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -152,6 +156,12 @@ async def group_session(
     if not updated:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True, "group_name": req.group_name.strip()}
+
+
+@router.post("/reorder")
+async def reorder_sessions(req: ReorderRequest, _token: str = Depends(require_token)):
+    await store.reorder_sessions(req.ids)
+    return {"ok": True, "count": len(req.ids)}
 
 
 @router.post("/{session_id}/stop")

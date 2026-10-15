@@ -122,6 +122,23 @@ export async function setSessionGroup(id: string, group_name: string): Promise<v
   }
 }
 
+/** Manual sidebar order: position in `ids` becomes each session's sort_order. */
+export async function reorderSessions(ids: string[]): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/sessions/reorder`, {
+    method: "POST",
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (res.status === 401) {
+    localStorage.removeItem("agenthq_token");
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+}
+
 export async function pinSession(id: string, pinned: boolean): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/sessions/${id}/pin`, {
     method: "POST",

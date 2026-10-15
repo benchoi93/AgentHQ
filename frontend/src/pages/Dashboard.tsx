@@ -48,6 +48,8 @@ export default function Dashboard() {
   // Sort sessions within each folder by pin order
   for (const [, machineSessions] of grouped) {
     machineSessions.sort((a, b) => {
+      const so = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      if (so) return so;
       const pinA = PIN_ORDER[a.project] ?? Infinity;
       const pinB = PIN_ORDER[b.project] ?? Infinity;
       if (pinA !== pinB) return pinA - pinB;
