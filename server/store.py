@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     metadata TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
+    group_name TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
 
@@ -118,6 +119,7 @@ async def get_db() -> aiosqlite.Connection:
             "ALTER TABLE agents ADD COLUMN agent_version TEXT",
             "ALTER TABLE sessions ADD COLUMN account TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 await _db.execute(migration)
@@ -374,6 +376,17 @@ async def set_session_pinned(session_id: str, pinned: bool) -> bool:
     cursor = await db.execute(
         "UPDATE sessions SET pinned = ? WHERE id = ?",
         (1 if pinned else 0, session_id),
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def set_session_group(session_id: str, group_name: str) -> bool:
+    """Manual sidebar folder; '' restores the path-derived default."""
+    db = await get_db()
+    cursor = await db.execute(
+        "UPDATE sessions SET group_name = ? WHERE id = ?",
+        (group_name.strip(), session_id),
     )
     await db.commit()
     return cursor.rowcount > 0

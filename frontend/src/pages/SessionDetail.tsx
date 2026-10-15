@@ -14,8 +14,12 @@ import {
   X,
   ClipboardCopy,
   Pin,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
 } from "lucide-react";
-import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, pinSession, restartSession, stopSession } from "../api";
+import { createSession, deleteSession, getSession, getSessions, getTerminalText, getWsUrl, pinSession, restartSession, setSessionGroup, stopSession } from "../api";
+import { effectiveGroup, groupSessions } from "../sessionGroups";
 import type { Session, FileMessage } from "../types";
 import { useWebSocket } from "../hooks/useWebSocket";
 import FileTree from "../components/FileTree";
@@ -64,6 +68,34 @@ export default function SessionDetail() {
       }
     }
     return Array.from(seen.values());
+  }, [sessions]);
+
+  // Sidebar folders: collapsed set persisted per browser; drag state for drop targets.
+  const COLLAPSED_KEY = "agenthq_sidebar_collapsed";
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]")); } catch { return new Set(); }
+  });
+  const toggleCollapsed = useCallback((name: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(next))); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropKey, setDropKey] = useState<string | null>(null);
+
+  // Move a session (and its sibling terminals on the same path+machine) into a folder; "" = back to auto.
+  const handleSetGroup = useCallback(async (s: Session, group_name: string) => {
+    const ids = sessions.filter((x) => x.path === s.path && x.machine === s.machine).map((x) => x.id);
+    const prevById = new Map(sessions.map((x) => [x.id, x.group_name ?? ""]));
+    setSessions((prev) => prev.map((x) => (ids.includes(x.id) ? { ...x, group_name } : x)));
+    try {
+      await Promise.all(ids.map((sid) => setSessionGroup(sid, group_name)));
+    } catch {
+      setSessions((prev) => prev.map((x) => (ids.includes(x.id) ? { ...x, group_name: prevById.get(x.id) ?? "" } : x)));
+    }
   }, [sessions]);
 
   const handleTogglePin = useCallback(async (s: Session) => {
@@ -417,7 +449,11 @@ export default function SessionDetail() {
                     return (
                       <div
                         key={s.id}
-                        className={`group w-full flex items-stretch transition-colors border-l-2
+                        draggable
+                        onDragStart={(e) => { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; setDragId(s.id); }}
+                        onDragEnd={() => { setDragId(null); setDropKey(null); }}
+                        title={`${s.path}  (drag onto a folder)`}
+                        className={`group w-full flex items-stretch transition-colors border-l-2 cursor-grab
                                    ${isActive
                                      ? "bg-slate-800/60 border-l-blue-500 text-slate-200"
                                      : "border-l-transparent text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
@@ -472,12 +508,23 @@ export default function SessionDetail() {
 
                   const pinned = sidebarSessions.filter((s) => s.pinned);
                   const unpinned = sidebarSessions.filter((s) => !s.pinned);
-                  const byMachine = unpinned.reduce<Record<string, Session[]>>((acc, s) => {
-                    const key = s.machine || "Unknown";
-                    if (!acc[key]) acc[key] = [];
-                    acc[key].push(s);
-                    return acc;
-                  }, {});
+                  const multiMachine = new Set(sidebarSessions.map((s) => s.machine)).size > 1;
+                  const groups = groupSessions(unpinned);
+                  const dragging = dragId ? sessions.find((x) => x.id === dragId) : undefined;
+                  const dropProps = (key: string, onDropSession: (s: Session) => void) => ({
+                    onDragOver: (e: React.DragEvent) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dropKey !== key) setDropKey(key);
+                    },
+                    onDragLeave: () => { if (dropKey === key) setDropKey(null); },
+                    onDrop: (e: React.DragEvent) => {
+                      e.preventDefault();
+                      setDropKey(null);
+                      const target = sessions.find((x) => x.id === e.dataTransfer.getData("text/plain"));
+                      if (target) onDropSession(target);
+                    },
+                  });
 
                   return (
                     <>
@@ -492,18 +539,53 @@ export default function SessionDetail() {
                           {pinned.map((s) => renderRow(s, true))}
                         </div>
                       )}
-                      {Object.entries(byMachine)
-                        .sort(([a], [b]) => a.localeCompare(b))
-                        .map(([machineName, machineSessions]) => (
-                          <div key={machineName}>
-                            <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/50 sticky top-0">
-                              <span className="text-[9px] font-semibold text-slate-600 uppercase tracking-widest">
-                                {machineName}
+                      {groups.map(([name, members]) => {
+                        const isCollapsed = collapsed.has(name);
+                        const isManual = members.some((m) => (m.group_name ?? "").trim() === name);
+                        return (
+                          <div key={name}>
+                            <button
+                              type="button"
+                              onClick={() => toggleCollapsed(name)}
+                              {...dropProps(name, (t) => handleSetGroup(t, effectiveGroup({ ...t, group_name: "" }) === name ? "" : name))}
+                              className={`w-full px-3 py-1 border-b border-slate-800/50 sticky top-0 flex items-center gap-1 text-left
+                                         ${dropKey === name ? "bg-blue-900/40" : isManual ? "bg-indigo-900/20" : "bg-slate-900/60"}`}
+                            >
+                              {isCollapsed
+                                ? <ChevronRight className="w-2.5 h-2.5 flex-shrink-0 text-slate-600" />
+                                : <ChevronDown className="w-2.5 h-2.5 flex-shrink-0 text-slate-600" />}
+                              <span className={`text-[9px] font-semibold uppercase tracking-widest truncate ${isManual ? "text-indigo-400/80" : "text-slate-600"}`}>
+                                {name}
                               </span>
-                            </div>
-                            {machineSessions.map((s) => renderRow(s, false))}
+                              <span className="ml-auto text-[9px] text-slate-700">{members.length}</span>
+                            </button>
+                            {!isCollapsed && members.map((s) => renderRow(s, multiMachine))}
                           </div>
-                        ))}
+                        );
+                      })}
+                      {dragging && (
+                        <div className="px-2 py-2 space-y-1">
+                          <div
+                            {...dropProps("__new__", (t) => {
+                              const name = window.prompt("New folder name");
+                              if (name && name.trim()) handleSetGroup(t, name.trim());
+                            })}
+                            className={`px-2 py-1.5 border border-dashed rounded text-[10px] flex items-center gap-1
+                                       ${dropKey === "__new__" ? "border-blue-500 text-blue-300" : "border-slate-700 text-slate-500"}`}
+                          >
+                            <FolderPlus className="w-3 h-3" /> New folder
+                          </div>
+                          {(dragging.group_name ?? "").trim() !== "" && (
+                            <div
+                              {...dropProps("__auto__", (t) => handleSetGroup(t, ""))}
+                              className={`px-2 py-1.5 border border-dashed rounded text-[10px] flex items-center gap-1 truncate
+                                         ${dropKey === "__auto__" ? "border-blue-500 text-blue-300" : "border-slate-700 text-slate-500"}`}
+                            >
+                              <RotateCcw className="w-3 h-3 flex-shrink-0" /> Back to {effectiveGroup({ ...dragging, group_name: "" })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </>
                   );
                 })()}

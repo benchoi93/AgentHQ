@@ -69,6 +69,7 @@ class SessionInfo(BaseModel):
     agent_version: Optional[str] = None
     account: str = ""
     pinned: bool = False
+    group_name: str = ""  # manual folder; '' = derived from path
 
 
 class SessionDetail(SessionInfo):

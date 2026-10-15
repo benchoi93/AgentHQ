@@ -27,6 +27,7 @@ export interface Session {
   agent_version?: string;
   account?: string;
   pinned?: boolean;
+  group_name?: string;
 }
 
 export interface LogMessage {

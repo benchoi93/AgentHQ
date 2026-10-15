@@ -104,6 +104,22 @@ export async function stopSession(id: string): Promise<void> {
   }
 }
 
+export async function setSessionGroup(id: string, group_name: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/sessions/${id}/group`, {
+    method: "POST",
+    headers: { ...getHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ group_name }),
+  });
+  if (res.status === 401) {
+    localStorage.removeItem("agenthq_token");
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+}
+
 export async function pinSession(id: string, pinned: boolean): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/sessions/${id}/pin`, {
     method: "POST",

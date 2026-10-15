@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { RefreshCw, LogOut, Filter, Bot, Plus, Monitor, BarChart3 } from "lucide-react";
 import { getSessions } from "../api";
 import type { Session } from "../types";
+import { groupSessions } from "../sessionGroups";
 import SessionCard from "../components/SessionCard";
 import NewSessionModal from "../components/NewSessionModal";
 
@@ -41,15 +42,11 @@ export default function Dashboard() {
   // Pin order: dot-claude first, AgentHQ second, then by last_activity DESC
   const PIN_ORDER: Record<string, number> = { "dot-claude": 0, "AgentHQ": 1 };
 
-  const grouped = sessions.reduce<Record<string, Session[]>>((acc, s) => {
-    const key = s.machine || "Unknown";
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(s);
-    return acc;
-  }, {});
+  // Folders: manual group_name, else "<machine> / <parent dir>" (see sessionGroups.ts)
+  const grouped = groupSessions(sessions);
 
-  // Sort sessions within each machine group by pin order
-  for (const machineSessions of Object.values(grouped)) {
+  // Sort sessions within each folder by pin order
+  for (const [, machineSessions] of grouped) {
     machineSessions.sort((a, b) => {
       const pinA = PIN_ORDER[a.project] ?? Infinity;
       const pinB = PIN_ORDER[b.project] ?? Infinity;
@@ -172,8 +169,7 @@ export default function Dashboard() {
         )}
 
         {!loading &&
-          Object.entries(grouped)
-            .sort(([a], [b]) => a.localeCompare(b))
+          grouped
             .map(([machine, machineSessions]) => (
               <div key={machine} className="mb-8">
                 <div className="flex items-center gap-2 mb-3">
@@ -183,12 +179,12 @@ export default function Dashboard() {
                   <span className="text-xs text-slate-600">
                     ({machineSessions.length})
                   </span>
-                  {machineSessions[0]?.agent_version && (
+                  {new Set(machineSessions.map((s) => s.machine)).size === 1 && machineSessions[0]?.agent_version && (
                     <span className="px-1.5 py-0.5 bg-slate-800 rounded text-xs text-slate-500 font-mono">
                       v{machineSessions[0].agent_version}
                     </span>
                   )}
-                  {machineSessions[0] && !machineSessions[0].agent_version && (
+                  {new Set(machineSessions.map((s) => s.machine)).size === 1 && machineSessions[0] && !machineSessions[0].agent_version && (
                     <span className="px-1.5 py-0.5 bg-amber-900/30 border border-amber-800/50 rounded text-xs text-amber-500 font-mono">
                       version unknown
                     </span>

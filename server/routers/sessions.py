@@ -28,6 +28,10 @@ class SessionReport(BaseModel):
 class PinRequest(BaseModel):
     pinned: bool
 
+
+class GroupRequest(BaseModel):
+    group_name: str = ""
+
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -135,6 +139,18 @@ async def pin_session(
     if not updated:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True, "pinned": req.pinned}
+
+
+@router.post("/{session_id}/group")
+async def group_session(
+    session_id: str,
+    req: GroupRequest,
+    _token: str = Depends(require_token),
+):
+    updated = await store.set_session_group(session_id, req.group_name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, "group_name": req.group_name.strip()}
 
 
 @router.post("/{session_id}/stop")
