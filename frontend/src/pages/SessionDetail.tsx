@@ -38,7 +38,9 @@ export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
-  const [sessions, setSessions] = useState<Session[]>([]);
+  // allSessions includes stopped rows (status "offline", wakeable); `sessions` is the live subset.
+  const [allSessions, setSessions] = useState<Session[]>([]);
+  const sessions = useMemo(() => allSessions.filter((s) => s.status !== "offline"), [allSessions]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   // Default sidebar closed on mobile (< 768px)
@@ -97,6 +99,24 @@ export default function SessionDetail() {
       setSessions((prev) => prev.map((x) => (ids.includes(x.id) ? { ...x, group_name: prevById.get(x.id) ?? "" } : x)));
     }
   }, [sessions]);
+
+  // Wake a stopped session: recreate it in place, then jump to it once it reports running.
+  const [waking, setWaking] = useState<Set<string>>(new Set());
+  const handleWake = useCallback(async (s: Session) => {
+    if (waking.has(s.id)) return;
+    setWaking((prev) => new Set(prev).add(s.id));
+    try {
+      await createSession({ machine: s.machine, directory: s.path, session_name: s.project, account: s.account });
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const data = await getSessions({ include_offline: true });
+        setSessions(data);
+        const live = data.find((x) => x.path === s.path && x.machine === s.machine && x.status === "running");
+        if (live) { navigate(`/session/${live.id}`); break; }
+      }
+    } catch { /* stays listed under stopped */ }
+    setWaking((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+  }, [waking, navigate]);
 
   const handleTogglePin = useCallback(async (s: Session) => {
     const next = !s.pinned;
@@ -168,7 +188,7 @@ export default function SessionDetail() {
       addTerminalPollRef.current = setInterval(async () => {
         attempts++;
         try {
-          const data = await getSessions();
+          const data = await getSessions({ include_offline: true });
           setSessions(data);
           const found = data.some(
             s => s.path === session.path && s.machine === session.machine
@@ -204,7 +224,7 @@ export default function SessionDetail() {
           await deleteSession(termId);
         } catch { /* ignore — might already be gone */ }
         try {
-          const data = await getSessions();
+          const data = await getSessions({ include_offline: true });
           setSessions(data);
         } catch { /* ignore */ }
         setActionPending(null);
@@ -276,7 +296,7 @@ export default function SessionDetail() {
     let cancelled = false;
     async function fetchSessions() {
       try {
-        const data = await getSessions();
+        const data = await getSessions({ include_offline: true });
         if (!cancelled) setSessions(data);
       } catch { /* ignore */ }
     }
@@ -478,7 +498,7 @@ export default function SessionDetail() {
                             <div className="text-xs font-medium truncate">{s.project}</div>
                             {showMachine && (
                               <div className="text-[9px] text-slate-600 uppercase tracking-widest truncate">
-                                {s.machine}
+                                {s.agent_name || s.machine}
                               </div>
                             )}
                           </div>
@@ -510,6 +530,19 @@ export default function SessionDetail() {
                   const unpinned = sidebarSessions.filter((s) => !s.pinned);
                   const multiMachine = new Set(sidebarSessions.map((s) => s.machine)).size > 1;
                   const groups = groupSessions(unpinned);
+                  // Stopped sessions (one per path+machine, none with a live twin) — click to wake.
+                  const liveKeys = new Set(sidebarSessions.map((s) => `${s.machine}:${s.path}`));
+                  const stoppedSeen = new Set<string>();
+                  const stopped = allSessions
+                    .filter((s) => {
+                      if (s.status !== "offline") return false;
+                      const k = `${s.machine}:${s.path}`;
+                      if (liveKeys.has(k) || stoppedSeen.has(k)) return false;
+                      stoppedSeen.add(k);
+                      return true;
+                    })
+                    .sort((a, b) => a.project.localeCompare(b.project));
+                  const stoppedOpen = collapsed.has("__stopped_open__"); // default collapsed, so the key is stored inverted
                   const dragging = dragId ? sessions.find((x) => x.id === dragId) : undefined;
                   const dropProps = (key: string, onDropSession: (s: Session) => void) => ({
                     onDragOver: (e: React.DragEvent) => {
@@ -563,6 +596,38 @@ export default function SessionDetail() {
                           </div>
                         );
                       })}
+                      {stopped.length > 0 && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => toggleCollapsed("__stopped_open__")}
+                            className="w-full px-3 py-1 border-b border-slate-800/50 sticky top-0 flex items-center gap-1 text-left bg-slate-900/60"
+                          >
+                            {stoppedOpen
+                              ? <ChevronDown className="w-2.5 h-2.5 flex-shrink-0 text-slate-600" />
+                              : <ChevronRight className="w-2.5 h-2.5 flex-shrink-0 text-slate-600" />}
+                            <span className="text-[9px] font-semibold uppercase tracking-widest text-slate-600">stopped</span>
+                            <span className="ml-auto text-[9px] text-slate-700">{stopped.length}</span>
+                          </button>
+                          {stoppedOpen && stopped.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => handleWake(s)}
+                              title={`${s.path}  (click to start)`}
+                              className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-slate-500 hover:text-slate-300 hover:bg-slate-800/30"
+                            >
+                              {waking.has(s.id)
+                                ? <RefreshCw className="w-3 h-3 flex-shrink-0 animate-spin" />
+                                : <Play className="w-3 h-3 flex-shrink-0" />}
+                              <span className="text-xs truncate">{s.project}</span>
+                              {multiMachine && (
+                                <span className="ml-auto text-[9px] uppercase tracking-widest text-slate-600">{s.agent_name || s.machine}</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {dragging && (
                         <div className="px-2 py-2 space-y-1">
                           <div

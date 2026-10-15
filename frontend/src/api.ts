@@ -31,10 +31,12 @@ export function getAgents(): Promise<Agent[]> {
 export function getSessions(filter?: {
   machine?: string;
   status?: string;
+  include_offline?: boolean;  // also return stopped sessions (status "offline"), wakeable on demand
 }): Promise<Session[]> {
   const params = new URLSearchParams();
   if (filter?.machine) params.set("machine", filter.machine);
   if (filter?.status) params.set("status", filter.status);
+  if (filter?.include_offline) params.set("include_offline", "true");
   const qs = params.toString();
   return request<Session[]>(`/api/sessions${qs ? `?${qs}` : ""}`);
 }

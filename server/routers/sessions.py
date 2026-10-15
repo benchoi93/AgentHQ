@@ -39,9 +39,10 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 async def list_sessions(
     machine: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    include_offline: bool = Query(False),
     _token: str = Depends(require_token),
 ):
-    rows = await store.list_sessions(machine=machine, status=status)
+    rows = await store.list_sessions(machine=machine, status=status, include_offline=include_offline)
     return [SessionInfo(**row) for row in rows]
 
 

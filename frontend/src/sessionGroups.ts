@@ -1,6 +1,7 @@
 // Sidebar / dashboard folders for sessions.
-// A session's folder is its manual `group_name` if set, otherwise "<machine> / <bucket>"
-// where bucket is the parent directory of the project (active, papers, proposals, tools, ...).
+// A session's folder is its manual `group_name` if set, otherwise the parent directory of the
+// project (active, papers, proposals, tools, gitsrcs, ...). Folders span machines; rows show a
+// machine badge instead.
 
 export interface Groupable {
   machine: string;
@@ -21,7 +22,7 @@ export function autoGroup(path: string): string {
 
 export function effectiveGroup(s: Groupable): string {
   const manual = (s.group_name ?? "").trim();
-  return manual || `${s.machine} / ${autoGroup(s.path)}`;
+  return manual || autoGroup(s.path);
 }
 
 /** Sessions bucketed by folder, folders sorted by name. */

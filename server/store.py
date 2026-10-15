@@ -205,15 +205,20 @@ async def upsert_session(
 
 async def list_sessions(
     machine: Optional[str] = None, status: Optional[str] = None,
+    include_offline: bool = False,
 ) -> list[dict]:
+    """Visible sessions. Offline rows (stopped tmux, row kept for folder/pin and
+    wake-on-demand) are excluded unless include_offline."""
     db = await get_db()
     query = """
         SELECT s.*, a.name AS agent_name, a.machine, a.agent_version
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
-        WHERE s.status != 'offline' AND s.hidden = 0
+        WHERE s.hidden = 0
     """
     params: list = []
+    if not include_offline:
+        query += " AND s.status != 'offline'"
     if machine:
         query += " AND a.machine = ?"
         params.append(machine)

@@ -221,7 +221,7 @@ async def list_sessions() -> str:
     """List all AgentHQ sessions with project, status, machine, and session ID."""
     http = await _get_http()
     async with http.get(
-        f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()
+        f"{AGENTHQ_URL}/api/sessions?include_offline=true", headers=_auth_headers()
     ) as resp:
         if resp.status != 200:
             return f"Error: HTTP {resp.status} — {await resp.text()}"
@@ -233,13 +233,19 @@ async def list_sessions() -> str:
     lines = []
     for s in sessions:
         status = s.get("status", "?")
-        marker = "💀" if status == "dead" else "•"
+        if status == "offline":
+            status, marker = "stopped", "💤"
+        else:
+            marker = "💀" if status == "dead" else "•"
         line = (
             f"{marker} {s.get('project', '?')} | {status} | "
-            f"machine={s.get('machine', '?')} | path={s.get('path', '?')} | id={s['id']}"
+            f"machine={s.get('machine', '?')} | folder={s.get('group_name') or '-'}"
+            f"{' | pinned' if s.get('pinned') else ''} | path={s.get('path', '?')} | id={s['id']}"
         )
         if status == "dead":
             line += "  ← use restart_session or stop_session"
+        elif status == "stopped":
+            line += "  ← sleeping; send_to_session wakes it"
         lines.append(line)
     return "\n".join(lines)
 
@@ -330,6 +336,11 @@ async def send_to_session(session_id: str, message: str) -> str:
     if block_reason:
         return f"BLOCKED — {block_reason}. Command was NOT sent. Entry logged in audit log."
 
+    woke = await _wake_if_stopped(session_id)
+    if woke.startswith("Error"):
+        return woke
+    prefix = "(woke the stopped session first) " if woke else ""
+
     url = _ws_url(f"/ws/relay/{session_id}?role=client")
 
     try:
@@ -360,13 +371,51 @@ async def send_to_session(session_id: str, message: str) -> str:
 
             try:
                 await asyncio.wait_for(_wait_confirm(), timeout=5)
-                return result_holder[0] if result_holder else "Sent"
+                return prefix + (result_holder[0] if result_holder else "Sent")
             except asyncio.TimeoutError:
-                return "Sent (no confirmation within 5s — message may still be delivered)"
+                return prefix + "Sent (no confirmation within 5s — message may still be delivered)"
     except Exception as exc:
         return f"Error sending to session: {exc}"
 
-    return "Sent (connection closed)"
+    return prefix + "Sent (connection closed)"
+
+
+async def _wake_if_stopped(session_id: str) -> str:
+    """Recreate a stopped (offline) session in place and wait until it runs.
+
+    Stopped sessions keep their DB row (path, machine, account, folder, pin);
+    create_session on the same path yields the same session id, so the row
+    simply comes back to life. Returns "" if nothing had to be done.
+    """
+    http = await _get_http()
+    async with http.get(f"{AGENTHQ_URL}/api/sessions/{session_id}", headers=_auth_headers()) as resp:
+        if resp.status != 200:
+            return ""
+        row = await resp.json()
+    if row.get("status") != "offline":
+        return ""
+    payload = {
+        "machine": row["machine"],
+        "directory": row["path"],
+        "session_name": row.get("project", ""),
+        "account": row.get("account", ""),
+    }
+    async with http.post(f"{AGENTHQ_URL}/api/sessions/create", json=payload, headers=_auth_headers()) as resp:
+        body = await resp.json()
+        if resp.status != 200 or not body.get("ok"):
+            return f"Error waking session {session_id}: HTTP {resp.status} — {body}"
+    for _ in range(45):
+        await asyncio.sleep(2)
+        async with http.get(f"{AGENTHQ_URL}/api/sessions/{session_id}", headers=_auth_headers()) as resp:
+            if resp.status == 200 and (await resp.json()).get("status") == "running":
+                await asyncio.sleep(8)  # let Claude Code finish booting before typing into it
+                return "woke"
+    return f"Error waking session {session_id}: not running after 90s"
+
+
+def _project_key(path: str) -> str:
+    """Claude Code's .claude/projects/ dir name for a project path ('/', '_' and '.' become '-')."""
+    return "-" + re.sub(r"[/_.]", "-", path.strip("/"))
 
 
 @mcp.tool()
@@ -411,6 +460,80 @@ async def create_session(machine: str, directory: str, session_name: str = "", a
             return f"Error: HTTP {resp.status} — {body}"
     except Exception as exc:
         return f"Error creating session: {exc}"
+
+
+@mcp.tool()
+async def set_session_folder(session_id: str, folder: str) -> str:
+    """Put a session in a dashboard folder (shown in the sidebar and dashboard).
+
+    Folders span machines. Pass "" to go back to the path-derived default
+    (active, papers, proposals, tools, gitsrcs, home, ...).
+
+    Args:
+        session_id: Target session ID (from list_sessions; stopped sessions are fine).
+        folder: Folder name, e.g. "Teaching", "Proposals", "Papers", "Research", "Infra", "Collab".
+    """
+    url = f"{AGENTHQ_URL}/api/sessions/{session_id}/group"
+    try:
+        http = await _get_http()
+        async with http.post(url, json={"group_name": folder}, headers=_auth_headers()) as resp:
+            body = await resp.json()
+            if resp.status == 404:
+                return f"Error: Session '{session_id}' not found."
+            if resp.status != 200 or not body.get("ok"):
+                return f"Error: HTTP {resp.status} — {body}"
+            return f"Folder set to '{body.get('group_name') or '(default)'}' for {session_id}."
+    except Exception as exc:
+        return f"Error setting folder: {exc}"
+
+
+@mcp.tool()
+async def list_idle_sessions(days: int = 7) -> str:
+    """Live sessions with no Claude conversation activity for `days` days — stop_session candidates.
+
+    Activity = mtime of the newest *.jsonl in the project's .claude/projects history
+    (checked on each machine, both account config dirs). Sessions with no history at
+    all count as idle (never used). PROTECTED marks pinned sessions and the commander;
+    leave those alone. Stopped sessions keep their folder and wake on send_to_session.
+
+    Args:
+        days: Idle threshold in days (default 7).
+    """
+    http = await _get_http()
+    async with http.get(f"{AGENTHQ_URL}/api/sessions", headers=_auth_headers()) as resp:
+        if resp.status != 200:
+            return f"Error: HTTP {resp.status} — {await resp.text()}"
+        sessions = await resp.json()
+    by_machine: dict[str, list[dict]] = {}
+    for s in sessions:
+        if s.get("status") != "offline":
+            by_machine.setdefault(s["machine"], []).append(s)
+
+    out = []
+    for machine, group in by_machine.items():
+        keys = [_project_key(s["path"]) for s in group]
+        quoted = " ".join("'" + k.replace("'", "") + "'" for k in keys)
+        # One char per key, in order: U = used within `days`, I = idle, N = no history dir.
+        cmd = (
+            f"for k in {quoted}; do r=N; for cfg in ~/.claude ~/.claude-b; do d=\"$cfg/projects/$k\"; "
+            f"[ -d \"$d\" ] || continue; if [ -n \"$(find \"$d\" -maxdepth 1 -name '*.jsonl' -mtime -{int(days)} -print -quit)\" ]; "
+            "then r=U; break; else r=I; fi; done; printf '%s' \"$r\"; done; echo"
+        )
+        res = await run_shell(machine, cmd, timeout=60)
+        flags = next((ln.strip() for ln in res.splitlines() if re.fullmatch(r"[NUI]+", ln.strip())), "")
+        if len(flags) != len(keys):
+            out.append(f"! {machine}: could not read activity ({res[:160]!r})")
+            continue
+        for s, f in zip(group, flags):
+            if f == "U":
+                continue
+            why = f"no activity for {days}d" if f == "I" else "no conversation history (never used)"
+            prot = " PROTECTED" if s.get("pinned") or s.get("project") == "commander" else ""
+            out.append(
+                f"{s.get('project')} | machine={machine} | folder={s.get('group_name') or '-'} | "
+                f"{why}{prot} | id={s['id']}"
+            )
+    return "\n".join(out) if out else f"No live session has been idle for {days}+ days."
 
 
 @mcp.tool()

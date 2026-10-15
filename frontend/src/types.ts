@@ -11,6 +11,7 @@ export interface CreateSessionRequest {
   machine: string;
   directory: string;
   session_name?: string;
+  account?: string;
 }
 
 export interface Session {
