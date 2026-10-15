@@ -219,6 +219,14 @@ async def list_sessions(
     params: list = []
     if not include_offline:
         query += " AND s.status != 'offline'"
+    else:
+        # A stopped session is only worth listing if it can be woken: its agent
+        # still heartbeats and the project directory still exists there (the
+        # agent only reports known_projects for directories it can see).
+        query += """ AND (s.status != 'offline' OR (
+            julianday('now') - julianday(a.last_seen) <= 120.0 / 86400.0
+            AND EXISTS (SELECT 1 FROM known_projects kp
+                        WHERE kp.agent_id = s.agent_id AND kp.path = s.path)))"""
     if machine:
         query += " AND a.machine = ?"
         params.append(machine)
