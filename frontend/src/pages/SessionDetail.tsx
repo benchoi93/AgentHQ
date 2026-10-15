@@ -489,19 +489,17 @@ export default function SessionDetail() {
                             }
                             if (window.innerWidth < 768) setSidebarOpen(false);
                           }}
-                          className="flex-1 min-w-0 text-left px-3 py-1.5 flex items-center gap-2"
+                          className="flex-1 min-w-0 text-left px-3 py-1 flex items-center gap-2"
                         >
                           <Circle
                             className={`w-1.5 h-1.5 flex-shrink-0 fill-current ${STATUS_COLORS[s.status] || "text-slate-600"}`}
                           />
-                          <div className="min-w-0 flex-1">
-                            <div className="text-xs font-medium truncate">{s.project}</div>
-                            {showMachine && (
-                              <div className="text-[9px] text-slate-600 uppercase tracking-widest truncate">
-                                {s.agent_name || s.machine}
-                              </div>
-                            )}
-                          </div>
+                          <div className="min-w-0 flex-1 text-xs font-medium truncate">{s.project}</div>
+                          {showMachine && (
+                            <span className="text-[8px] text-slate-600 uppercase tracking-wider flex-shrink-0">
+                              {s.agent_name || s.machine}
+                            </span>
+                          )}
                           {siblings > 1 && (
                             <span className="text-[9px] text-slate-600 bg-slate-800 px-1 rounded">
                               {siblings}
@@ -615,7 +613,7 @@ export default function SessionDetail() {
                               type="button"
                               onClick={() => handleWake(s)}
                               title={`${s.path}  (click to start)`}
-                              className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-slate-500 hover:text-slate-300 hover:bg-slate-800/30"
+                              className="w-full text-left px-3 py-1 flex items-center gap-2 text-slate-500 hover:text-slate-300 hover:bg-slate-800/30"
                             >
                               {waking.has(s.id)
                                 ? <RefreshCw className="w-3 h-3 flex-shrink-0 animate-spin" />
