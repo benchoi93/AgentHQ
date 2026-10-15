@@ -1722,6 +1722,7 @@ async def rate_limit_watcher_loop(
 # ---------------------------------------------------------------------------
 
 async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> None:
+    global _cached_sessions
     tasks: dict[str, dict[str, asyncio.Task]] = {}
     interval = cfg["heartbeat_interval"]
 
@@ -1748,6 +1749,14 @@ async def session_manager(cfg: dict[str, Any], http: aiohttp.ClientSession) -> N
                 del tasks[sid]
                 _backend.sessions_needing_restart.discard(sid)
                 _backend.sessions_needing_stop.discard(sid)
+            # A stopped session is already gone from the backend, but the discovery
+            # cache still lists it until the next heartbeat. Starting its tasks here
+            # would make ensure_pane() auto-create a bare tmux shell under the same
+            # name, resurrecting the session without Claude in it.
+            if stop_ids:
+                sessions = [s for s in sessions if s["id"] not in stop_ids]
+                async with _cache_lock:
+                    _cached_sessions = [s for s in _cached_sessions if s["id"] not in stop_ids]
 
         for s in sessions:
             sid = s["id"]
